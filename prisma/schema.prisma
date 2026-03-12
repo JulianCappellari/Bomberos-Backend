@@ -1,0 +1,524 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  FIREFIGHTER
+  OPERATOR
+}
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AttendanceType {
+  ENTRY
+  EXIT
+}
+
+enum AttendanceMethod {
+  QR
+  MANUAL
+}
+
+enum AlertType {
+  FIRE
+  RESCUE
+  ACCIDENT
+  CHEMICAL
+  MEDICAL
+  FLOOD
+  OTHER
+}
+
+enum AlertPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum AlertStatus {
+  ACTIVE
+  RESOLVED
+  CANCELLED
+}
+
+enum AlertResponseType {
+  GOING
+  NOT_GOING
+}
+
+enum IncidentStatus {
+  OPEN
+  CLOSED
+}
+
+enum AssetType {
+  VEHICLE
+  PPE
+  OTHER
+}
+
+enum AssetStatus {
+  OPERATIONAL
+  MAINTENANCE
+  OUT_OF_SERVICE
+}
+
+enum InventoryItemState {
+  OK
+  REVIEW
+  OUT
+}
+
+enum InspectionItemResult {
+  OK
+  MISSING
+  DAMAGED
+  UNCHECKED
+}
+
+enum AttendanceAction {
+  CHECK_IN
+  CHECK_OUT
+}
+
+enum AttendanceTrustLevel {
+  HIGH
+  MEDIUM
+  REJECTED
+}
+
+enum AttendanceStatus {
+  OPEN
+  CLOSED
+}
+
+model User {
+  id                String    @id @default(cuid())
+  username          String    @unique @db.VarChar(50)
+  email             String?   @unique @db.VarChar(120)
+  passwordHash      String    @db.VarChar(255)
+  role              UserRole  @default(FIREFIGHTER)
+  isActive          Boolean   @default(true)
+  isPendingApproval Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  profile          FirefighterProfile?
+  emergencyContact EmergencyContact?
+
+  submittedApplications VolunteerApplication[] @relation("ApplicationReviewer")
+  reviewedApplications  VolunteerApplication[] @relation("ApplicationReviewedBy")
+
+  attendanceRecords AttendanceRecord[] @relation("AttendanceUser")
+  attendanceCreated AttendanceRecord[] @relation("AttendanceRecordedBy")
+  attendances       Attendance[]
+
+  createdAlerts  Alert[]         @relation("AlertCreatedBy")
+  resolvedAlerts Alert[]         @relation("AlertResolvedBy")
+  alertResponses AlertResponse[]
+
+  createdIncidents    Incident[]           @relation("IncidentCreatedBy")
+  closedIncidents     Incident[]           @relation("IncidentClosedBy")
+  incidentAssignments IncidentAssignment[]
+
+  createdShifts    Shift[]           @relation("ShiftCreatedBy")
+  shiftAssignments ShiftAssignment[]
+
+  inspectionsResponsible Inspection[] @relation("InspectionResponsible")
+
+  auditLogsAsActor AuditLog[] @relation("AuditActor")
+
+  @@index([role])
+  @@index([isActive])
+  @@index([isPendingApproval])
+}
+
+model FirefighterProfile {
+  id        String    @id @default(cuid())
+  userId    String    @unique
+  fullName  String    @db.VarChar(120)
+  dni       String    @unique @db.VarChar(20)
+  birthDate DateTime?
+  rank      String    @db.VarChar(80)
+  badge     String    @unique @db.VarChar(30)
+  phone     String?   @db.VarChar(40)
+  altPhone  String?   @db.VarChar(40)
+  address   String?   @db.VarChar(180)
+  bloodType String?   @db.VarChar(10)
+  joinDate  DateTime?
+  avatarUrl String?   @db.VarChar(255)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([fullName])
+  @@index([rank])
+}
+
+model EmergencyContact {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  fullName     String   @db.VarChar(120)
+  phone        String   @db.VarChar(40)
+  relationship String?  @db.VarChar(60)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VolunteerApplication {
+  id                       String            @id @default(cuid())
+  desiredUsername          String            @db.VarChar(50)
+  email                    String?           @db.VarChar(120)
+  dni                      String            @db.VarChar(20)
+  fullName                 String            @db.VarChar(120)
+  birthDate                DateTime?
+  phone                    String            @db.VarChar(40)
+  altPhone                 String?           @db.VarChar(40)
+  address                  String            @db.VarChar(180)
+  bloodType                String?           @db.VarChar(10)
+  emergencyContactName     String            @db.VarChar(120)
+  emergencyContactPhone    String            @db.VarChar(40)
+  emergencyContactRelation String?           @db.VarChar(60)
+  category                 String?           @db.VarChar(50)
+  message                  String?           @db.Text
+  status                   ApplicationStatus @default(PENDING)
+  reviewedByUserId         String?
+  submittedByUserId        String?
+  reviewedAt               DateTime?
+  rejectReason             String?           @db.Text
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
+
+  submittedBy User? @relation("ApplicationReviewer", fields: [submittedByUserId], references: [id], onDelete: SetNull)
+  reviewedBy  User? @relation("ApplicationReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([desiredUsername])
+  @@index([dni])
+  @@index([createdAt])
+}
+
+model AttendanceRecord {
+  id               String           @id @default(cuid())
+  userId           String
+  type             AttendanceType
+  method           AttendanceMethod @default(QR)
+  recordedByUserId String?
+  notes            String?          @db.VarChar(255)
+  recordedAt       DateTime         @default(now())
+  createdAt        DateTime         @default(now())
+
+  user       User  @relation("AttendanceUser", fields: [userId], references: [id], onDelete: Cascade)
+  recordedBy User? @relation("AttendanceRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([userId, recordedAt])
+  @@index([recordedAt])
+}
+
+model Alert {
+  id               String        @id @default(cuid())
+  type             AlertType
+  priority         AlertPriority
+  description      String        @db.Text
+  location         String        @db.VarChar(180)
+  contactPhone     String?       @db.VarChar(40)
+  status           AlertStatus   @default(ACTIVE)
+  createdByUserId  String
+  resolvedByUserId String?
+  createdAt        DateTime      @default(now())
+  resolvedAt       DateTime?
+  updatedAt        DateTime      @updatedAt
+
+  createdBy  User            @relation("AlertCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  resolvedBy User?           @relation("AlertResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
+  responses  AlertResponse[]
+  incidents  Incident[]
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model AlertResponse {
+  id          String            @id @default(cuid())
+  alertId     String
+  userId      String
+  response    AlertResponseType
+  respondedAt DateTime          @default(now())
+
+  alert Alert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([alertId, userId])
+  @@index([userId])
+}
+
+model Incident {
+  id              String         @id @default(cuid())
+  alertId         String?
+  title           String         @db.VarChar(140)
+  type            AlertType
+  description     String         @db.Text
+  status          IncidentStatus @default(OPEN)
+  occurredAt      DateTime       @default(now())
+  losses          String?        @db.Text
+  createdByUserId String
+  closedByUserId  String?
+  closedAt        DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  alert       Alert?               @relation(fields: [alertId], references: [id], onDelete: SetNull)
+  createdBy   User                 @relation("IncidentCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  closedBy    User?                @relation("IncidentClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
+  assignments IncidentAssignment[]
+
+  @@index([alertId])
+  @@index([status])
+  @@index([occurredAt])
+}
+
+model IncidentAssignment {
+  id         String   @id @default(cuid())
+  incidentId String
+  userId     String
+  assignedAt DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([incidentId, userId])
+  @@index([userId])
+}
+
+model Shift {
+  id              String   @id @default(cuid())
+  date            DateTime
+  startTime       String   @db.VarChar(5)
+  endTime         String   @db.VarChar(5)
+  shiftType       String   @db.VarChar(60)
+  notes           String?  @db.Text
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  createdBy   User              @relation("ShiftCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  assignments ShiftAssignment[]
+
+  @@index([date])
+}
+
+model ShiftAssignment {
+  id         String   @id @default(cuid())
+  shiftId    String
+  userId     String
+  assignedAt DateTime @default(now())
+
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([shiftId, userId])
+  @@index([userId])
+}
+
+model Asset {
+  id            String      @id @default(cuid())
+  name          String      @db.VarChar(140)
+  assetType     AssetType
+  status        AssetStatus @default(OPERATIONAL)
+  notes         String?     @db.Text
+  lastCheckDate DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  deletedAt     DateTime?
+
+  vehicle Vehicle?
+
+  @@index([assetType])
+  @@index([status])
+}
+
+model Vehicle {
+  id                   String   @id @default(cuid())
+  assetId              String   @unique
+  plate                String?  @unique @db.VarChar(20)
+  year                 Int?
+  mileage              Int?
+  nextOilChangeMileage Int?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  asset          Asset                  @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  inventoryItems VehicleInventoryItem[]
+  inspections    Inspection[]
+}
+
+model VehicleInventoryItem {
+  id          String             @id @default(cuid())
+  vehicleId   String
+  name        String             @db.VarChar(140)
+  quantity    Int                @default(1)
+  state       InventoryItemState @default(OK)
+  compartment String?            @db.VarChar(60)
+  notes       String?            @db.Text
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  vehicle         Vehicle          @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  inspectionItems InspectionItem[]
+
+  @@index([vehicleId])
+  @@index([state])
+}
+
+model Inspection {
+  id                String     @id @default(cuid())
+  vehicleId         String
+  incidentType      AlertType?
+  inspectionDate    DateTime
+  inspectionTime    String?    @db.VarChar(5)
+  responsibleUserId String
+  observations      String?    @db.Text
+  summaryOk         Int        @default(0)
+  summaryMissing    Int        @default(0)
+  summaryDamaged    Int        @default(0)
+  summaryUnchecked  Int        @default(0)
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  vehicle     Vehicle          @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  responsible User             @relation("InspectionResponsible", fields: [responsibleUserId], references: [id], onDelete: Restrict)
+  items       InspectionItem[]
+
+  @@index([vehicleId])
+  @@index([inspectionDate])
+}
+
+model InspectionItem {
+  id               String               @id @default(cuid())
+  inspectionId     String
+  inventoryItemId  String
+  expectedQuantity Int                  @default(1)
+  result           InspectionItemResult @default(UNCHECKED)
+  observations     String?              @db.Text
+  createdAt        DateTime             @default(now())
+
+  inspection    Inspection           @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  inventoryItem VehicleInventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  @@index([inspectionId])
+  @@index([inventoryItemId])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String?
+  action      String   @db.VarChar(120)
+  entityType  String   @db.VarChar(80)
+  entityId    String   @db.VarChar(80)
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model Station {
+  id           String   @id @default(cuid())
+  name         String
+  latitude     Float
+  longitude    Float
+  radiusMeters Int      @default(60)
+  allowedIp    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  qrChallenges   QrChallenge[]
+  attendances    Attendance[]
+  trustedDevices TrustedDevice[]
+}
+
+model QrChallenge {
+  id              String    @id @default(cuid())
+  stationId       String
+  tokenHash       String    @unique
+  expiresAt       DateTime
+  createdAt       DateTime  @default(now())
+  createdByUserId String?
+  consumedCount   Int       @default(0)
+  revokedAt       DateTime?
+
+  station Station @relation(fields: [stationId], references: [id])
+
+  @@index([stationId, expiresAt])
+}
+
+model TrustedDevice {
+  id          String   @id @default(cuid())
+  stationId   String
+  name        String
+  fingerprint String   @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  station Station @relation(fields: [stationId], references: [id])
+
+  @@index([stationId, isActive])
+}
+
+model Attendance {
+  id            String           @id @default(cuid())
+  userId        String
+  stationId     String
+  status        AttendanceStatus @default(OPEN)
+
+  checkInAt  DateTime?
+  checkOutAt DateTime?
+
+  workedMinutes Int?
+  
+  checkInTrust  AttendanceTrustLevel?
+  checkOutTrust AttendanceTrustLevel?
+
+  checkInLatitude   Float?
+  checkInLongitude  Float?
+  checkInAccuracy   Float?
+  checkOutLatitude  Float?
+  checkOutLongitude Float?
+  checkOutAccuracy  Float?
+
+  checkInIp  String?
+  checkOutIp String?
+
+  checkInDevice  String?
+  checkOutDevice String?
+
+  checkInQrId  String?
+  checkOutQrId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  station Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([stationId, createdAt])
+}

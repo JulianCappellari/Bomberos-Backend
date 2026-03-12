@@ -1,0 +1,319 @@
+import { prisma } from "../../config/prisma";
+
+function normalizeNullable(value?: string | null) {
+  if (value === undefined || value === null || value === "") return null;
+  return value;
+}
+
+async function ensureUsersExist(userIds: string[]) {
+  if (!userIds.length) return;
+
+  const users = await prisma.user.findMany({
+    where: {
+      id: { in: userIds },
+      deletedAt: null,
+      isActive: true,
+    },
+    select: { id: true },
+  });
+
+  const foundIds = new Set(users.map((u) => u.id));
+  const missing = userIds.filter((id) => !foundIds.has(id));
+
+  if (missing.length > 0) {
+    throw new Error(`Some users do not exist or are inactive: ${missing.join(", ")}`);
+  }
+}
+
+export async function createIncident(data: {
+  alertId?: string | null;
+  title: string;
+  type: "FIRE" | "RESCUE" | "ACCIDENT" | "CHEMICAL" | "MEDICAL" | "FLOOD" | "OTHER";
+  description: string;
+  losses?: string | null;
+  assignedUserIds?: string[];
+  createdByUserId: string;
+}) {
+  if (data.alertId) {
+    const alert = await prisma.alert.findUnique({
+      where: { id: data.alertId },
+    });
+
+    if (!alert) {
+      throw new Error("Alert not found");
+    }
+  }
+
+  await ensureUsersExist(data.assignedUserIds || []);
+
+  const incident = await prisma.incident.create({
+    data: {
+      alertId: data.alertId || null,
+      title: data.title,
+      type: data.type,
+      description: data.description,
+      losses: normalizeNullable(data.losses),
+      status: "OPEN",
+      createdByUserId: data.createdByUserId,
+      assignments: data.assignedUserIds?.length
+        ? {
+            create: data.assignedUserIds.map((userId) => ({
+              userId,
+            })),
+          }
+        : undefined,
+    },
+    include: {
+      alert: true,
+      createdBy: {
+        include: { profile: true },
+      },
+      closedBy: {
+        include: { profile: true },
+      },
+      assignments: {
+        include: {
+          user: {
+            include: { profile: true },
+          },
+        },
+      },
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actorUserId: data.createdByUserId,
+      action: "INCIDENT_CREATED",
+      entityType: "Incident",
+      entityId: incident.id,
+      metadata: {
+        title: incident.title,
+        type: incident.type,
+        alertId: incident.alertId,
+      },
+    },
+  });
+
+  return incident;
+}
+
+export async function getAllIncidents(status?: string) {
+  return prisma.incident.findMany({
+    where: status
+      ? {
+          status: status as "OPEN" | "CLOSED",
+        }
+      : undefined,
+    include: {
+      alert: true,
+      createdBy: {
+        include: { profile: true },
+      },
+      closedBy: {
+        include: { profile: true },
+      },
+      assignments: {
+        include: {
+          user: {
+            include: { profile: true },
+          },
+        },
+      },
+    },
+    orderBy: {
+      occurredAt: "desc",
+    },
+  });
+}
+
+export async function getIncidentById(incidentId: string) {
+  const incident = await prisma.incident.findUnique({
+    where: { id: incidentId },
+    include: {
+      alert: true,
+      createdBy: {
+        include: { profile: true },
+      },
+      closedBy: {
+        include: { profile: true },
+      },
+      assignments: {
+        include: {
+          user: {
+            include: { profile: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!incident) {
+    throw new Error("Incident not found");
+  }
+
+  return incident;
+}
+
+export async function updateIncident(
+  incidentId: string,
+  data: {
+    title?: string;
+    type?: "FIRE" | "RESCUE" | "ACCIDENT" | "CHEMICAL" | "MEDICAL" | "FLOOD" | "OTHER";
+    description?: string;
+    losses?: string | null;
+  },
+  actorUserId?: string,
+) {
+  const existing = await prisma.incident.findUnique({
+    where: { id: incidentId },
+  });
+
+  if (!existing) {
+    throw new Error("Incident not found");
+  }
+
+  const updated = await prisma.incident.update({
+    where: { id: incidentId },
+    data: {
+      title: data.title,
+      type: data.type,
+      description: data.description,
+      losses: data.losses !== undefined ? normalizeNullable(data.losses) : undefined,
+    },
+    include: {
+      alert: true,
+      createdBy: {
+        include: { profile: true },
+      },
+      closedBy: {
+        include: { profile: true },
+      },
+      assignments: {
+        include: {
+          user: {
+            include: { profile: true },
+          },
+        },
+      },
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actorUserId: actorUserId || null,
+      action: "INCIDENT_UPDATED",
+      entityType: "Incident",
+      entityId: updated.id,
+      metadata: {
+        title: updated.title,
+        type: updated.type,
+      },
+    },
+  });
+
+  return updated;
+}
+
+export async function closeIncident(incidentId: string, actorUserId: string) {
+  const incident = await prisma.incident.findUnique({
+    where: { id: incidentId },
+  });
+
+  if (!incident) {
+    throw new Error("Incident not found");
+  }
+
+  if (incident.status !== "OPEN") {
+    throw new Error("Only open incidents can be closed");
+  }
+
+  const updated = await prisma.incident.update({
+    where: { id: incidentId },
+    data: {
+      status: "CLOSED",
+      closedByUserId: actorUserId,
+      closedAt: new Date(),
+    },
+    include: {
+      alert: true,
+      createdBy: {
+        include: { profile: true },
+      },
+      closedBy: {
+        include: { profile: true },
+      },
+      assignments: {
+        include: {
+          user: {
+            include: { profile: true },
+          },
+        },
+      },
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actorUserId,
+      action: "INCIDENT_CLOSED",
+      entityType: "Incident",
+      entityId: updated.id,
+      metadata: {
+        title: updated.title,
+      },
+    },
+  });
+
+  return updated;
+}
+
+export async function assignUsersToIncident(
+  incidentId: string,
+  userIds: string[],
+  actorUserId?: string,
+) {
+  const incident = await prisma.incident.findUnique({
+    where: { id: incidentId },
+  });
+
+  if (!incident) {
+    throw new Error("Incident not found");
+  }
+
+  await ensureUsersExist(userIds);
+
+  const existingAssignments = await prisma.incidentAssignment.findMany({
+    where: {
+      incidentId,
+      userId: { in: userIds },
+    },
+    select: { userId: true },
+  });
+
+  const existingUserIds = new Set(existingAssignments.map((a) => a.userId));
+  const newUserIds = userIds.filter((id) => !existingUserIds.has(id));
+
+  if (newUserIds.length > 0) {
+    await prisma.incidentAssignment.createMany({
+      data: newUserIds.map((userId) => ({
+        incidentId,
+        userId,
+      })),
+    });
+  }
+
+  await prisma.auditLog.create({
+    data: {
+      actorUserId: actorUserId || null,
+      action: "INCIDENT_USERS_ASSIGNED",
+      entityType: "Incident",
+      entityId: incidentId,
+      metadata: {
+        assignedUserIds: userIds,
+      },
+    },
+  });
+
+  return getIncidentById(incidentId);
+}
