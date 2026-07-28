@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import {
   assignUsersToShiftSchema,
   createShiftSchema,
+  listShiftsQuerySchema,
 } from "./shifts.schemas";
 import {
   assignUsersToShift,
@@ -37,10 +38,9 @@ export async function createShiftController(req: Request, res: Response) {
 
 export async function getAllShiftsController(req: Request, res: Response) {
   try {
-    const date =
-      typeof req.query.date === "string" ? req.query.date : undefined;
+    const parsed = listShiftsQuerySchema.parse(req.query);
 
-    const shifts = await getAllShifts(date);
+    const shifts = await getAllShifts(parsed);
 
     return res.status(200).json(shifts);
   } catch (error: any) {

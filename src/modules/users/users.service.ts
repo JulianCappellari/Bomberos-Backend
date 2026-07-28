@@ -61,6 +61,32 @@ export async function getAllUsers() {
   });
 }
 
+export async function getActiveUserRoster() {
+  return prisma.user.findMany({
+    where: {
+      deletedAt: null,
+      isActive: true,
+      isPendingApproval: false,
+    },
+    select: {
+      id: true,
+      username: true,
+      role: true,
+      profile: {
+        select: {
+          fullName: true,
+          rank: true,
+          badge: true,
+          avatarUrl: true,
+        },
+      },
+    },
+    orderBy: {
+      username: "asc",
+    },
+  });
+}
+
 export async function getUserById(userId: string) {
   const user = await prisma.user.findFirst({
     where: {

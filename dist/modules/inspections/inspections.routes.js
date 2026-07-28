@@ -1,0 +1,13 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const inspections_controller_1 = require("./inspections.controller");
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const role_middleware_1 = require("../../middlewares/role.middleware");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.authenticate);
+router.get("/", inspections_controller_1.getAllInspectionsController);
+router.get("/vehicle/:vehicleId/history", inspections_controller_1.getVehicleInspectionHistoryController);
+router.get("/:id", inspections_controller_1.getInspectionByIdController);
+router.post("/", (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), inspections_controller_1.createInspectionController);
+exports.default = router;

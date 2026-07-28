@@ -1,6 +1,7 @@
 import { Router } from "express";
 import {
   createUserController,
+  getActiveUserRosterController,
   getAllUsersController,
   getUserByIdController,
   toggleUserActiveController,
@@ -13,6 +14,7 @@ const router = Router();
 
 router.use(authenticate);
 
+router.get("/roster", getActiveUserRosterController);
 router.get("/", authorize("ADMIN"), getAllUsersController);
 router.get("/:id", authorize("ADMIN"), getUserByIdController);
 router.post("/", authorize("ADMIN"), createUserController);

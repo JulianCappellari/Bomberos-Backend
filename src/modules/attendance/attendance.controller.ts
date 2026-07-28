@@ -8,9 +8,9 @@ import {
   getMyAttendances,
   getMyAttendanceSummary,
   getMyOpenAttendance,
+  getPresentPersonnel,
   scanAttendanceQr,
 } from "./attendance.service";
-import { prisma } from "../../config/prisma";
 
 
 export async function createAttendanceQrChallengeController(
@@ -77,6 +77,20 @@ export async function getMyOpenAttendanceController(req: Request, res: Response)
   } catch (error: any) {
     return res.status(500).json({
       message: error.message || "No se pudo obtener la asistencia activa",
+    });
+  }
+}
+
+export async function getPresentPersonnelController(
+  _req: Request,
+  res: Response,
+) {
+  try {
+    const present = await getPresentPersonnel();
+    return res.status(200).json(present);
+  } catch (error: any) {
+    return res.status(500).json({
+      message: error.message || "No se pudo obtener el personal presente",
     });
   }
 }

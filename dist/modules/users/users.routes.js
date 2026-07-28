@@ -1,0 +1,15 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const users_controller_1 = require("./users.controller");
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const role_middleware_1 = require("../../middlewares/role.middleware");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.authenticate);
+router.get("/roster", users_controller_1.getActiveUserRosterController);
+router.get("/", (0, role_middleware_1.authorize)("ADMIN"), users_controller_1.getAllUsersController);
+router.get("/:id", (0, role_middleware_1.authorize)("ADMIN"), users_controller_1.getUserByIdController);
+router.post("/", (0, role_middleware_1.authorize)("ADMIN"), users_controller_1.createUserController);
+router.patch("/:id", (0, role_middleware_1.authorize)("ADMIN"), users_controller_1.updateUserController);
+router.patch("/:id/toggle-active", (0, role_middleware_1.authorize)("ADMIN"), users_controller_1.toggleUserActiveController);
+exports.default = router;

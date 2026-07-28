@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import {
   createUser,
+  getActiveUserRoster,
   getAllUsers,
   getUserById,
   toggleUserActive,
@@ -15,6 +16,20 @@ export async function getAllUsersController(req: Request, res: Response) {
   } catch (error: any) {
     return res.status(500).json({
       message: error.message || "Failed to fetch users",
+    });
+  }
+}
+
+export async function getActiveUserRosterController(
+  _req: Request,
+  res: Response,
+) {
+  try {
+    const users = await getActiveUserRoster();
+    return res.status(200).json(users);
+  } catch (error: any) {
+    return res.status(500).json({
+      message: error.message || "Failed to fetch user roster",
     });
   }
 }

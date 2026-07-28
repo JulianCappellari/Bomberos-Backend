@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { verifyAccessToken } from "../utils/jwt";
+import { prisma } from "../config/prisma";
 
 declare global {
   namespace Express {
@@ -12,7 +13,11 @@ declare global {
   }
 }
 
-export function authenticate(req: Request, res: Response, next: NextFunction) {
+export async function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
   try {
     const authHeader = req.headers.authorization;
 
@@ -23,9 +28,26 @@ export function authenticate(req: Request, res: Response, next: NextFunction) {
     const token = authHeader.split(" ")[1];
     const payload = verifyAccessToken(token);
 
+    const user = await prisma.user.findFirst({
+      where: {
+        id: payload.userId,
+        isActive: true,
+        isPendingApproval: false,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        role: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(401).json({ message: "User is not allowed to access" });
+    }
+
     req.user = {
-      userId: payload.userId,
-      role: payload.role,
+      userId: user.id,
+      role: user.role,
     };
 
     next();

@@ -97,8 +97,10 @@ export async function scanAttendanceQr(data: {
   const openAttendance = await prisma.attendance.findFirst({
     where: {
       userId: data.userId,
-      stationId: station.id,
       status: "OPEN",
+    },
+    include: {
+      station: true,
     },
     orderBy: {
       createdAt: "desc",
@@ -137,6 +139,12 @@ export async function scanAttendanceQr(data: {
       },
     });
   } else {
+    if (openAttendance.stationId !== station.id) {
+      throw new Error(
+        `Tenes una asistencia abierta en ${openAttendance.station.name}. Cerrala antes de registrar ingreso en otro cuartel.`,
+      );
+    }
+
     action = "CHECK_OUT";
 
     const checkOutAt = new Date();
@@ -207,6 +215,51 @@ export async function getMyOpenAttendance(userId: string) {
     },
     orderBy: {
       createdAt: "desc",
+    },
+  });
+}
+
+export async function getPresentPersonnel() {
+  return prisma.attendance.findMany({
+    where: {
+      status: "OPEN",
+      checkInAt: {
+        not: null,
+      },
+      user: {
+        deletedAt: null,
+        isActive: true,
+        isPendingApproval: false,
+      },
+    },
+    select: {
+      id: true,
+      checkInAt: true,
+      checkInTrust: true,
+      station: {
+        select: {
+          id: true,
+          name: true,
+        },
+      },
+      user: {
+        select: {
+          id: true,
+          username: true,
+          role: true,
+          profile: {
+            select: {
+              fullName: true,
+              rank: true,
+              badge: true,
+              avatarUrl: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: {
+      checkInAt: "desc",
     },
   });
 }

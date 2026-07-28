@@ -5,6 +5,10 @@ function normalizeNullable(value?: string | null) {
   return value;
 }
 
+function uniqueUserIds(userIds: string[]) {
+  return Array.from(new Set(userIds));
+}
+
 async function ensureUsersExist(userIds: string[]) {
   if (!userIds.length) return;
 
@@ -13,6 +17,7 @@ async function ensureUsersExist(userIds: string[]) {
       id: { in: userIds },
       deletedAt: null,
       isActive: true,
+      isPendingApproval: false,
     },
     select: { id: true },
   });
@@ -34,6 +39,8 @@ export async function createIncident(data: {
   assignedUserIds?: string[];
   createdByUserId: string;
 }) {
+  const assignedUserIds = uniqueUserIds(data.assignedUserIds || []);
+
   if (data.alertId) {
     const alert = await prisma.alert.findUnique({
       where: { id: data.alertId },
@@ -42,9 +49,17 @@ export async function createIncident(data: {
     if (!alert) {
       throw new Error("Alert not found");
     }
+
+    if (alert.status === "CANCELLED") {
+      throw new Error("Cannot create an incident from a cancelled alert");
+    }
+
+    if (alert.type !== data.type) {
+      throw new Error("Incident type must match the linked alert type");
+    }
   }
 
-  await ensureUsersExist(data.assignedUserIds || []);
+  await ensureUsersExist(assignedUserIds);
 
   const incident = await prisma.incident.create({
     data: {
@@ -55,9 +70,9 @@ export async function createIncident(data: {
       losses: normalizeNullable(data.losses),
       status: "OPEN",
       createdByUserId: data.createdByUserId,
-      assignments: data.assignedUserIds?.length
+      assignments: assignedUserIds.length
         ? {
-            create: data.assignedUserIds.map((userId) => ({
+            create: assignedUserIds.map((userId) => ({
               userId,
             })),
           }
@@ -173,6 +188,21 @@ export async function updateIncident(
     throw new Error("Incident not found");
   }
 
+  if (existing.status !== "OPEN") {
+    throw new Error("Only open incidents can be updated");
+  }
+
+  if (existing.alertId && data.type && data.type !== existing.type) {
+    const alert = await prisma.alert.findUnique({
+      where: { id: existing.alertId },
+      select: { type: true },
+    });
+
+    if (alert && alert.type !== data.type) {
+      throw new Error("Incident type must match the linked alert type");
+    }
+  }
+
   const updated = await prisma.incident.update({
     where: { id: incidentId },
     data: {
@@ -228,44 +258,77 @@ export async function closeIncident(incidentId: string, actorUserId: string) {
     throw new Error("Only open incidents can be closed");
   }
 
-  const updated = await prisma.incident.update({
-    where: { id: incidentId },
-    data: {
-      status: "CLOSED",
-      closedByUserId: actorUserId,
-      closedAt: new Date(),
-    },
-    include: {
-      alert: true,
-      createdBy: {
-        include: { profile: true },
+  return prisma.$transaction(async (tx) => {
+    const closedAt = new Date();
+
+    const updated = await tx.incident.update({
+      where: { id: incidentId },
+      data: {
+        status: "CLOSED",
+        closedByUserId: actorUserId,
+        closedAt,
       },
-      closedBy: {
-        include: { profile: true },
-      },
-      assignments: {
-        include: {
-          user: {
-            include: { profile: true },
+      include: {
+        alert: true,
+        createdBy: {
+          include: { profile: true },
+        },
+        closedBy: {
+          include: { profile: true },
+        },
+        assignments: {
+          include: {
+            user: {
+              include: { profile: true },
+            },
           },
         },
       },
-    },
-  });
+    });
 
-  await prisma.auditLog.create({
-    data: {
-      actorUserId,
-      action: "INCIDENT_CLOSED",
-      entityType: "Incident",
-      entityId: updated.id,
-      metadata: {
-        title: updated.title,
+    if (incident.alertId) {
+      await tx.alert.updateMany({
+        where: {
+          id: incident.alertId,
+          status: "ACTIVE",
+        },
+        data: {
+          status: "RESOLVED",
+          resolvedByUserId: actorUserId,
+          resolvedAt: closedAt,
+        },
+      });
+    }
+
+    await tx.auditLog.create({
+      data: {
+        actorUserId,
+        action: "INCIDENT_CLOSED",
+        entityType: "Incident",
+        entityId: updated.id,
+        metadata: {
+          title: updated.title,
+          alertId: updated.alertId,
+        },
       },
-    },
-  });
+    });
 
-  return updated;
+    if (incident.alertId) {
+      await tx.auditLog.create({
+        data: {
+          actorUserId,
+          action: "ALERT_RESOLVED_BY_INCIDENT_CLOSE",
+          entityType: "Alert",
+          entityId: incident.alertId,
+          metadata: {
+            incidentId: updated.id,
+          },
+        },
+      });
+    }
+
+    return updated;
+  });
 }
 
 export async function assignUsersToIncident(
@@ -281,18 +344,24 @@ export async function assignUsersToIncident(
     throw new Error("Incident not found");
   }
 
-  await ensureUsersExist(userIds);
+  if (incident.status !== "OPEN") {
+    throw new Error("Only open incidents can receive assignments");
+  }
+
+  const uniqueIds = uniqueUserIds(userIds);
+
+  await ensureUsersExist(uniqueIds);
 
   const existingAssignments = await prisma.incidentAssignment.findMany({
     where: {
       incidentId,
-      userId: { in: userIds },
+      userId: { in: uniqueIds },
     },
     select: { userId: true },
   });
 
   const existingUserIds = new Set(existingAssignments.map((a) => a.userId));
-  const newUserIds = userIds.filter((id) => !existingUserIds.has(id));
+  const newUserIds = uniqueIds.filter((id) => !existingUserIds.has(id));
 
   if (newUserIds.length > 0) {
     await prisma.incidentAssignment.createMany({
@@ -310,7 +379,7 @@ export async function assignUsersToIncident(
       entityType: "Incident",
       entityId: incidentId,
       metadata: {
-        assignedUserIds: userIds,
+        assignedUserIds: uniqueIds,
       },
     },
   });

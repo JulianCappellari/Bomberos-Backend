@@ -144,7 +144,7 @@ export async function approveApplication(applicationId: string, actorUserId: str
           fullName: application.fullName,
           dni: application.dni,
           birthDate: application.birthDate,
-          rank: "Bombero Voluntario",
+          rank: "Aspirante",
           badge: `B-${String(userCount + 1).padStart(3, "0")}`,
           phone: application.phone,
           altPhone: application.altPhone,

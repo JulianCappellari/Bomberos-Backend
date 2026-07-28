@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FIREFIGHTER_RANKS } from "../../utils/firefighter-ranks";
 
 export const createUserSchema = z.object({
   username: z.string().min(3).max(50),
@@ -7,7 +8,7 @@ export const createUserSchema = z.object({
   role: z.enum(["ADMIN", "FIREFIGHTER", "OPERATOR"]),
   fullName: z.string().min(3).max(120),
   dni: z.string().min(6).max(20),
-  rank: z.string().min(2).max(80),
+  rank: z.enum(FIREFIGHTER_RANKS),
   badge: z.string().min(1).max(30),
   birthDate: z.string().optional().or(z.literal("")),
   phone: z.string().optional().or(z.literal("")),
@@ -30,7 +31,7 @@ export const updateUserSchema = z.object({
   isActive: z.boolean().optional(),
   fullName: z.string().min(3).max(120).optional(),
   dni: z.string().min(6).max(20).optional(),
-  rank: z.string().min(2).max(80).optional(),
+  rank: z.enum(FIREFIGHTER_RANKS).optional(),
   badge: z.string().min(1).max(30).optional(),
   birthDate: z.string().optional().or(z.literal("")),
   phone: z.string().optional().or(z.literal("")),

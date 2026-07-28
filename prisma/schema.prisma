@@ -135,7 +135,9 @@ model User {
   createdShifts    Shift[]           @relation("ShiftCreatedBy")
   shiftAssignments ShiftAssignment[]
 
-  inspectionsResponsible Inspection[] @relation("InspectionResponsible")
+  inspectionAssignments InspectionResponsible[]
+
+  chatMessages ChatMessage[] @relation("ChatMessageAuthor")
 
   auditLogsAsActor AuditLog[] @relation("AuditActor")
 
@@ -335,6 +337,24 @@ model ShiftAssignment {
   @@index([userId])
 }
 
+model ChatMessage {
+  id           String    @id @default(cuid())
+  authorUserId String
+  body         String    @db.Text
+  isPinned     Boolean   @default(false)
+  editedAt     DateTime?
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  author User @relation("ChatMessageAuthor", fields: [authorUserId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([authorUserId])
+  @@index([deletedAt])
+  @@index([isPinned, createdAt])
+}
+
 model Asset {
   id            String      @id @default(cuid())
   name          String      @db.VarChar(140)
@@ -355,6 +375,7 @@ model Asset {
 model Vehicle {
   id                   String   @id @default(cuid())
   assetId              String   @unique
+  unitNumber           String   @unique @db.VarChar(20)
   plate                String?  @unique @db.VarChar(20)
   year                 Int?
   mileage              Int?
@@ -363,50 +384,66 @@ model Vehicle {
   updatedAt            DateTime @updatedAt
 
   asset          Asset                  @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  inventoryItems VehicleInventoryItem[]
+  compartments   VehicleCompartment[]
   inspections    Inspection[]
 }
 
-model VehicleInventoryItem {
-  id          String             @id @default(cuid())
+model VehicleCompartment {
+  id          String   @id @default(cuid())
   vehicleId   String
-  name        String             @db.VarChar(140)
-  quantity    Int                @default(1)
-  state       InventoryItemState @default(OK)
-  compartment String?            @db.VarChar(60)
-  notes       String?            @db.Text
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  name        String   @db.VarChar(120)
+  description String?  @db.VarChar(255)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  vehicle         Vehicle          @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  items   VehicleInventoryItem[]
+
+  @@unique([vehicleId, name])
+  @@index([vehicleId, sortOrder])
+}
+
+model VehicleInventoryItem {
+  id               String             @id @default(cuid())
+  compartmentId    String
+  name             String             @db.VarChar(140)
+  expectedQuantity Int                @default(1)
+  state            InventoryItemState @default(OK)
+  notes            String?            @db.Text
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  compartment     VehicleCompartment @relation(fields: [compartmentId], references: [id], onDelete: Cascade)
   inspectionItems InspectionItem[]
 
-  @@index([vehicleId])
+  @@index([compartmentId])
   @@index([state])
 }
 
-model Inspection {
-  id                String     @id @default(cuid())
-  vehicleId         String
-  incidentType      AlertType?
-  inspectionDate    DateTime
-  inspectionTime    String?    @db.VarChar(5)
-  responsibleUserId String
-  observations      String?    @db.Text
-  summaryOk         Int        @default(0)
-  summaryMissing    Int        @default(0)
-  summaryDamaged    Int        @default(0)
-  summaryUnchecked  Int        @default(0)
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
 
-  vehicle     Vehicle          @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  responsible User             @relation("InspectionResponsible", fields: [responsibleUserId], references: [id], onDelete: Restrict)
-  items       InspectionItem[]
+model Inspection {
+  id               String     @id @default(cuid())
+  vehicleId        String
+  incidentType     AlertType?
+  inspectionDate   DateTime
+  inspectionTime   String?    @db.VarChar(5)
+  observations     String?    @db.Text
+  summaryOk        Int        @default(0)
+  summaryMissing   Int        @default(0)
+  summaryDamaged   Int        @default(0)
+  summaryUnchecked Int        @default(0)
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  vehicle      Vehicle                 @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  responsibles InspectionResponsible[]
+  items        InspectionItem[]
 
   @@index([vehicleId])
   @@index([inspectionDate])
 }
+
 
 model InspectionItem {
   id               String               @id @default(cuid())
@@ -422,6 +459,19 @@ model InspectionItem {
 
   @@index([inspectionId])
   @@index([inventoryItemId])
+}
+
+model InspectionResponsible {
+  id           String   @id @default(cuid())
+  inspectionId String
+  userId       String
+  assignedAt   DateTime @default(now())
+
+  inspection Inspection @relation(fields: [inspectionId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([inspectionId, userId])
+  @@index([userId])
 }
 
 model AuditLog {

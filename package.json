@@ -8,7 +8,8 @@
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "logic:check": "tsx src/scripts/logic-check.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

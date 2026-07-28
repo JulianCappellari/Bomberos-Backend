@@ -17,6 +17,7 @@ export async function createAsset(data: {
   notes?: string | null;
   lastCheckDate?: string | null;
   vehicle?: {
+    unitNumber: string;
     plate?: string | null;
     year?: number;
     mileage?: number;
@@ -24,6 +25,10 @@ export async function createAsset(data: {
   };
   actorUserId?: string;
 }) {
+  if (data.assetType === "VEHICLE" && !data.vehicle?.unitNumber) {
+    throw new Error("unitNumber is required for vehicle assets");
+  }
+
   if (data.vehicle?.plate) {
     const existingVehicle = await prisma.vehicle.findFirst({
       where: { plate: data.vehicle.plate },
@@ -31,6 +36,16 @@ export async function createAsset(data: {
 
     if (existingVehicle) {
       throw new Error("Vehicle plate already exists");
+    }
+  }
+
+  if (data.assetType === "VEHICLE" && data.vehicle?.unitNumber) {
+    const existingUnitNumber = await prisma.vehicle.findFirst({
+      where: { unitNumber: data.vehicle.unitNumber },
+    });
+
+    if (existingUnitNumber) {
+      throw new Error("Vehicle unit number already exists");
     }
   }
 
@@ -45,6 +60,7 @@ export async function createAsset(data: {
         data.assetType === "VEHICLE"
           ? {
               create: {
+                unitNumber: data.vehicle!.unitNumber,
                 plate: normalizeNullable(data.vehicle?.plate),
                 year: data.vehicle?.year,
                 mileage: data.vehicle?.mileage,
@@ -54,12 +70,7 @@ export async function createAsset(data: {
           : undefined,
     },
     include: {
-      vehicle: {
-        include: {
-          inventoryItems: true,
-          inspections: true,
-        },
-      },
+      vehicle: true,
     },
   });
 
@@ -95,12 +106,7 @@ export async function getAllAssets(assetType?: string, status?: string) {
         : {}),
     },
     include: {
-      vehicle: {
-        include: {
-          inventoryItems: true,
-          inspections: true,
-        },
-      },
+      vehicle: true,
     },
     orderBy: {
       createdAt: "desc",
@@ -115,23 +121,7 @@ export async function getAssetById(assetId: string) {
       deletedAt: null,
     },
     include: {
-      vehicle: {
-        include: {
-          inventoryItems: true,
-          inspections: {
-            include: {
-              responsible: {
-                include: {
-                  profile: true,
-                },
-              },
-            },
-            orderBy: {
-              inspectionDate: "desc",
-            },
-          },
-        },
-      },
+      vehicle: true,
     },
   });
 
@@ -170,19 +160,15 @@ export async function updateAsset(
       name: data.name,
       assetType: data.assetType,
       status: data.status,
-      notes: data.notes !== undefined ? normalizeNullable(data.notes) : undefined,
+      notes:
+        data.notes !== undefined ? normalizeNullable(data.notes) : undefined,
       lastCheckDate:
         data.lastCheckDate !== undefined
           ? toDateOrNull(data.lastCheckDate)
           : undefined,
     },
     include: {
-      vehicle: {
-        include: {
-          inventoryItems: true,
-          inspections: true,
-        },
-      },
+      vehicle: true,
     },
   });
 
@@ -240,6 +226,7 @@ export async function deleteAsset(assetId: string, actorUserId?: string) {
 export async function upsertVehicleData(
   assetId: string,
   data: {
+    unitNumber?: string;
     plate?: string | null;
     year?: number;
     mileage?: number;
@@ -280,31 +267,44 @@ export async function upsertVehicleData(
     }
   }
 
+  if (data.unitNumber) {
+    const existingUnitNumber = await prisma.vehicle.findFirst({
+      where: {
+        unitNumber: data.unitNumber,
+        NOT: {
+          assetId,
+        },
+      },
+    });
+
+    if (existingUnitNumber) {
+      throw new Error("Vehicle unit number already exists");
+    }
+  }
+
+  if (!asset.vehicle && !data.unitNumber) {
+    throw new Error("unitNumber is required to create vehicle data");
+  }
+
   const vehicle = asset.vehicle
     ? await prisma.vehicle.update({
         where: { assetId },
         data: {
+          unitNumber: data.unitNumber,
           plate: normalizeNullable(data.plate),
           year: data.year,
           mileage: data.mileage,
           nextOilChangeMileage: data.nextOilChangeMileage,
-        },
-        include: {
-          inventoryItems: true,
-          inspections: true,
         },
       })
     : await prisma.vehicle.create({
         data: {
           assetId,
+          unitNumber: data.unitNumber!,
           plate: normalizeNullable(data.plate),
           year: data.year,
           mileage: data.mileage,
           nextOilChangeMileage: data.nextOilChangeMileage,
-        },
-        include: {
-          inventoryItems: true,
-          inspections: true,
         },
       });
 
@@ -315,6 +315,7 @@ export async function upsertVehicleData(
       entityType: "Vehicle",
       entityId: vehicle.id,
       metadata: {
+        unitNumber: vehicle.unitNumber,
         plate: vehicle.plate,
         year: vehicle.year,
       },
@@ -322,128 +323,4 @@ export async function upsertVehicleData(
   });
 
   return vehicle;
-}
-
-export async function createVehicleInventoryItem(
-  vehicleId: string,
-  data: {
-    name: string;
-    quantity?: number;
-    state?: "OK" | "REVIEW" | "OUT";
-    compartment?: string | null;
-    notes?: string | null;
-  },
-  actorUserId?: string,
-) {
-  const vehicle = await prisma.vehicle.findUnique({
-    where: { id: vehicleId },
-  });
-
-  if (!vehicle) {
-    throw new Error("Vehicle not found");
-  }
-
-  const item = await prisma.vehicleInventoryItem.create({
-    data: {
-      vehicleId,
-      name: data.name,
-      quantity: data.quantity || 1,
-      state: data.state || "OK",
-      compartment: normalizeNullable(data.compartment),
-      notes: normalizeNullable(data.notes),
-    },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "VEHICLE_INVENTORY_ITEM_CREATED",
-      entityType: "VehicleInventoryItem",
-      entityId: item.id,
-      metadata: {
-        vehicleId,
-        name: item.name,
-        quantity: item.quantity,
-      },
-    },
-  });
-
-  return item;
-}
-
-export async function updateVehicleInventoryItem(
-  itemId: string,
-  data: {
-    name?: string;
-    quantity?: number;
-    state?: "OK" | "REVIEW" | "OUT";
-    compartment?: string | null;
-    notes?: string | null;
-  },
-  actorUserId?: string,
-) {
-  const existing = await prisma.vehicleInventoryItem.findUnique({
-    where: { id: itemId },
-  });
-
-  if (!existing) {
-    throw new Error("Vehicle inventory item not found");
-  }
-
-  const updated = await prisma.vehicleInventoryItem.update({
-    where: { id: itemId },
-    data: {
-      name: data.name,
-      quantity: data.quantity,
-      state: data.state,
-      compartment:
-        data.compartment !== undefined ? normalizeNullable(data.compartment) : undefined,
-      notes: data.notes !== undefined ? normalizeNullable(data.notes) : undefined,
-    },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "VEHICLE_INVENTORY_ITEM_UPDATED",
-      entityType: "VehicleInventoryItem",
-      entityId: updated.id,
-      metadata: {
-        vehicleId: updated.vehicleId,
-        name: updated.name,
-        quantity: updated.quantity,
-      },
-    },
-  });
-
-  return updated;
-}
-
-export async function deleteVehicleInventoryItem(itemId: string, actorUserId?: string) {
-  const existing = await prisma.vehicleInventoryItem.findUnique({
-    where: { id: itemId },
-  });
-
-  if (!existing) {
-    throw new Error("Vehicle inventory item not found");
-  }
-
-  await prisma.vehicleInventoryItem.delete({
-    where: { id: itemId },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "VEHICLE_INVENTORY_ITEM_DELETED",
-      entityType: "VehicleInventoryItem",
-      entityId: itemId,
-      metadata: {
-        vehicleId: existing.vehicleId,
-        name: existing.name,
-      },
-    },
-  });
-
-  return { message: "Vehicle inventory item deleted successfully" };
 }

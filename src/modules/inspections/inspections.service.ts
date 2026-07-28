@@ -9,6 +9,56 @@ function toDateOnly(value: string) {
   return new Date(`${value}T00:00:00.000Z`);
 }
 
+function inventoryStateForResult(
+  result: "OK" | "MISSING" | "DAMAGED" | "UNCHECKED",
+) {
+  if (result === "OK") return "OK";
+  if (result === "MISSING") return "OUT";
+  return "REVIEW";
+}
+
+function vehicleStatusForInspection(summary: {
+  summaryMissing: number;
+  summaryDamaged: number;
+  summaryUnchecked: number;
+}) {
+  if (
+    summary.summaryMissing > 0 ||
+    summary.summaryDamaged > 0 ||
+    summary.summaryUnchecked > 0
+  ) {
+    return "MAINTENANCE";
+  }
+
+  return "OPERATIONAL";
+}
+
+const inspectionInclude = {
+  vehicle: {
+    include: {
+      asset: true,
+    },
+  },
+  responsibles: {
+    include: {
+      user: {
+        include: {
+          profile: true,
+        },
+      },
+    },
+  },
+  items: {
+    include: {
+      inventoryItem: {
+        include: {
+          compartment: true,
+        },
+      },
+    },
+  },
+} as const;
+
 export async function createInspection(data: {
   vehicleId: string;
   incidentType?:
@@ -34,7 +84,11 @@ export async function createInspection(data: {
     where: { id: data.vehicleId },
     include: {
       asset: true,
-      inventoryItems: true,
+      compartments: {
+        include: {
+          items: true,
+        },
+      },
     },
   });
 
@@ -42,102 +96,124 @@ export async function createInspection(data: {
     throw new Error("Vehicle not found");
   }
 
-  const inventoryIds = new Set(vehicle.inventoryItems.map((item) => item.id));
+  const allVehicleItems = vehicle.compartments.flatMap((compartment) => compartment.items);
+  const inventoryIds = new Set(allVehicleItems.map((item) => item.id));
 
   for (const item of data.items) {
     if (!inventoryIds.has(item.inventoryItemId)) {
-      throw new Error(`Inventory item ${item.inventoryItemId} does not belong to this vehicle`);
+      throw new Error(
+        `Inventory item ${item.inventoryItemId} does not belong to this vehicle`,
+      );
     }
+  }
+
+  const responsibleUser = await prisma.user.findFirst({
+    where: {
+      id: data.responsibleUserId,
+      isActive: true,
+      isPendingApproval: false,
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+
+  if (!responsibleUser) {
+    throw new Error("Responsible user not found or inactive");
   }
 
   const summaryOk = data.items.filter((i) => i.result === "OK").length;
   const summaryMissing = data.items.filter((i) => i.result === "MISSING").length;
   const summaryDamaged = data.items.filter((i) => i.result === "DAMAGED").length;
   const summaryUnchecked = data.items.filter((i) => i.result === "UNCHECKED").length;
-
-  const inspection = await prisma.inspection.create({
-    data: {
-      vehicleId: data.vehicleId,
-      incidentType: data.incidentType,
-      inspectionDate: toDateOnly(data.inspectionDate),
-      inspectionTime: normalizeNullable(data.inspectionTime),
-      responsibleUserId: data.responsibleUserId,
-      observations: normalizeNullable(data.observations),
-      summaryOk,
-      summaryMissing,
-      summaryDamaged,
-      summaryUnchecked,
-      items: {
-        create: data.items.map((item) => ({
-          inventoryItemId: item.inventoryItemId,
-          expectedQuantity: item.expectedQuantity || 1,
-          result: item.result,
-          observations: normalizeNullable(item.observations),
-        })),
-      },
-    },
-    include: {
-      vehicle: {
-        include: {
-          asset: true,
-        },
-      },
-      responsible: {
-        include: {
-          profile: true,
-        },
-      },
-      items: {
-        include: {
-          inventoryItem: true,
-        },
-      },
-    },
+  const inspectionDate = toDateOnly(data.inspectionDate);
+  const vehicleStatus = vehicleStatusForInspection({
+    summaryMissing,
+    summaryDamaged,
+    summaryUnchecked,
   });
 
-  for (const item of data.items) {
-    if (item.result === "DAMAGED" || item.result === "MISSING") {
-      await prisma.vehicleInventoryItem.update({
-        where: { id: item.inventoryItemId },
-        data: {
-          state: "REVIEW",
-        },
-      });
-    }
-
-    if (item.result === "OK") {
-      await prisma.vehicleInventoryItem.update({
-        where: { id: item.inventoryItemId },
-        data: {
-          state: "OK",
-        },
-      });
-    }
-  }
-
-  if (summaryMissing > 0 || summaryDamaged > 0) {
-    await prisma.asset.update({
-      where: { id: vehicle.assetId },
+  const inspection = await prisma.$transaction(async (tx) => {
+    const createdInspection = await tx.inspection.create({
       data: {
-        status: "MAINTENANCE",
-      },
-    });
-  }
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: data.responsibleUserId,
-      action: "INSPECTION_CREATED",
-      entityType: "Inspection",
-      entityId: inspection.id,
-      metadata: {
         vehicleId: data.vehicleId,
+        incidentType: data.incidentType,
+        inspectionDate,
+        inspectionTime: normalizeNullable(data.inspectionTime),
+        observations: normalizeNullable(data.observations),
         summaryOk,
         summaryMissing,
         summaryDamaged,
         summaryUnchecked,
       },
-    },
+    });
+
+    await tx.inspectionResponsible.create({
+      data: {
+        inspectionId: createdInspection.id,
+        userId: data.responsibleUserId,
+      },
+    });
+
+    for (const item of data.items) {
+      const baseItem = await tx.vehicleInventoryItem.findUnique({
+        where: { id: item.inventoryItemId },
+        select: {
+          expectedQuantity: true,
+        },
+      });
+
+      if (!baseItem) {
+        throw new Error(`Inventory item ${item.inventoryItemId} not found`);
+      }
+
+      await tx.inspectionItem.create({
+        data: {
+          inspectionId: createdInspection.id,
+          inventoryItemId: item.inventoryItemId,
+          expectedQuantity: item.expectedQuantity ?? baseItem.expectedQuantity,
+          result: item.result,
+          observations: normalizeNullable(item.observations),
+        },
+      });
+    }
+
+    for (const item of data.items) {
+      await tx.vehicleInventoryItem.update({
+        where: { id: item.inventoryItemId },
+        data: {
+          state: inventoryStateForResult(item.result),
+        },
+      });
+    }
+
+    await tx.asset.update({
+      where: { id: vehicle.assetId },
+      data: {
+        status: vehicleStatus,
+        lastCheckDate: inspectionDate,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorUserId: data.responsibleUserId,
+        action: "INSPECTION_CREATED",
+        entityType: "Inspection",
+        entityId: createdInspection.id,
+        metadata: {
+          vehicleId: data.vehicleId,
+          summaryOk,
+          summaryMissing,
+          summaryDamaged,
+          summaryUnchecked,
+        },
+      },
+    });
+
+    return tx.inspection.findUnique({
+      where: { id: createdInspection.id },
+      include: inspectionInclude,
+    });
   });
 
   return inspection;
@@ -146,50 +222,15 @@ export async function createInspection(data: {
 export async function getAllInspections(vehicleId?: string) {
   return prisma.inspection.findMany({
     where: vehicleId ? { vehicleId } : undefined,
-    include: {
-      vehicle: {
-        include: {
-          asset: true,
-        },
-      },
-      responsible: {
-        include: {
-          profile: true,
-        },
-      },
-      items: {
-        include: {
-          inventoryItem: true,
-        },
-      },
-    },
-    orderBy: [
-      { inspectionDate: "desc" },
-      { createdAt: "desc" },
-    ],
+    include: inspectionInclude,
+    orderBy: [{ inspectionDate: "desc" }, { createdAt: "desc" }],
   });
 }
 
 export async function getInspectionById(inspectionId: string) {
   const inspection = await prisma.inspection.findUnique({
     where: { id: inspectionId },
-    include: {
-      vehicle: {
-        include: {
-          asset: true,
-        },
-      },
-      responsible: {
-        include: {
-          profile: true,
-        },
-      },
-      items: {
-        include: {
-          inventoryItem: true,
-        },
-      },
-    },
+    include: inspectionInclude,
   });
 
   if (!inspection) {
@@ -210,26 +251,7 @@ export async function getVehicleInspectionHistory(vehicleId: string) {
 
   return prisma.inspection.findMany({
     where: { vehicleId },
-    include: {
-      vehicle: {
-        include: {
-          asset: true,
-        },
-      },
-      responsible: {
-        include: {
-          profile: true,
-        },
-      },
-      items: {
-        include: {
-          inventoryItem: true,
-        },
-      },
-    },
-    orderBy: [
-      { inspectionDate: "desc" },
-      { createdAt: "desc" },
-    ],
+    include: inspectionInclude,
+    orderBy: [{ inspectionDate: "desc" }, { createdAt: "desc" }],
   });
 }

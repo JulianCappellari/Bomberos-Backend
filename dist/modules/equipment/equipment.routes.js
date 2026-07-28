@@ -1,0 +1,16 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const role_middleware_1 = require("../../middlewares/role.middleware");
+const equipment_controller_1 = require("./equipment.controller");
+const router = (0, express_1.Router)();
+router.post("/vehicles/:vehicleId/compartments", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), equipment_controller_1.createCompartmentController);
+router.post("/compartments/:compartmentId/items", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), equipment_controller_1.createInventoryItemController);
+router.patch("/items/:itemId", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), equipment_controller_1.updateInventoryItemController);
+router.delete("/items/:itemId", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), equipment_controller_1.deleteInventoryItemController);
+router.get("/vehicles/:vehicleId/inventory", auth_middleware_1.authenticate, equipment_controller_1.getVehicleInventoryController);
+router.post("/inspections", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), equipment_controller_1.createInspectionController);
+router.get("/inspections/:id", auth_middleware_1.authenticate, equipment_controller_1.getInspectionByIdController);
+router.get("/vehicles/:vehicleId/inspections", auth_middleware_1.authenticate, equipment_controller_1.getVehicleInspectionsController);
+exports.default = router;

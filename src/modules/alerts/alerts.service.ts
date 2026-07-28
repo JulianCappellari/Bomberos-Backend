@@ -221,6 +221,7 @@ export async function respondToAlert(
       id: userId,
       deletedAt: null,
       isActive: true,
+      isPendingApproval: false,
     },
   });
 

@@ -21,7 +21,7 @@ export const createInspectionSchema = z.object({
     ])
     .optional(),
   inspectionDate: z.string().date(),
-  inspectionTime: z.string().optional().or(z.literal("")),
+  inspectionTime: z.string().max(5).optional().or(z.literal("")),
   observations: z.string().optional().or(z.literal("")),
   items: z.array(inspectionItemSchema).min(1),
 });
