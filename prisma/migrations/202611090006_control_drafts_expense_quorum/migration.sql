@@ -1,0 +1,10 @@
+CREATE TABLE "ControlDraft" ("id" TEXT PRIMARY KEY,"ownerId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE RESTRICT,"vehicleId" TEXT NOT NULL REFERENCES "Vehicle"("id") ON DELETE RESTRICT,"startedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"closedAt" TIMESTAMP(3),"revision" INTEGER NOT NULL DEFAULT 1,"participants" JSONB NOT NULL);
+CREATE INDEX "ControlDraft_ownerId_closedAt_idx" ON "ControlDraft"("ownerId","closedAt");
+CREATE UNIQUE INDEX "ControlDraft_open_owner_vehicle_key" ON "ControlDraft"("ownerId","vehicleId") WHERE "closedAt" IS NULL;
+ALTER TABLE "Inspection" ADD COLUMN "draftId" TEXT REFERENCES "ControlDraft"("id") ON DELETE RESTRICT;
+CREATE UNIQUE INDEX "Inspection_draftId_key" ON "Inspection"("draftId");
+ALTER TABLE "InspectionResponsible" ADD COLUMN "participatedAt" TIMESTAMP(3);
+ALTER TABLE "ExpenseClaim" ADD COLUMN "officerExpense" BOOLEAN NOT NULL DEFAULT false;
+UPDATE "ExpenseClaim" e SET "officerExpense"=true FROM "FirefighterProfile" p WHERE p."userId"=e."userId" AND lower(p."rank")='oficial';
+CREATE TABLE "ExpenseApproval" ("id" TEXT PRIMARY KEY,"claimId" TEXT NOT NULL REFERENCES "ExpenseClaim"("id") ON DELETE RESTRICT,"userId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE RESTRICT,"rankSnapshot" VARCHAR(80) NOT NULL,"decision" VARCHAR(16) NOT NULL CHECK("decision" IN ('APPROVED','REJECTED')),"note" VARCHAR(1000) NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE UNIQUE INDEX "ExpenseApproval_claimId_userId_key" ON "ExpenseApproval"("claimId","userId");

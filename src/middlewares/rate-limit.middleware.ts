@@ -1,53 +1,32 @@
 import { NextFunction, Request, Response } from "express";
-
-type Bucket = {
-  count: number;
-  resetAt: number;
-};
-
-const buckets = new Map<string, Bucket>();
-
-function getClientKey(req: Request) {
-  const forwardedFor = req.headers["x-forwarded-for"];
-  const ip =
-    typeof forwardedFor === "string"
-      ? forwardedFor.split(",")[0]?.trim()
-      : req.socket.remoteAddress;
-
-  return `${req.method}:${req.path}:${ip || "unknown"}`;
+type Bucket = { count: number; resetAt: number };
+export function clientRateLimitKey(req: Request) {
+  // Express only trusts proxies explicitly configured by the deployment.
+  return (req.ip || req.socket.remoteAddress || "unknown").replace(/^::ffff:/, "");
 }
-
-export function rateLimit(options: {
-  windowMs: number;
-  maxRequests: number;
-  message?: string;
-}) {
+export function rateLimit(options: { windowMs: number; maxRequests: number; message?: string }) {
+  const buckets = new Map<string, Bucket>();
+  let nextCleanup = 0;
   return (req: Request, res: Response, next: NextFunction) => {
     const now = Date.now();
-    const key = getClientKey(req);
-    const existing = buckets.get(key);
-
-    if (!existing || existing.resetAt <= now) {
-      buckets.set(key, {
-        count: 1,
-        resetAt: now + options.windowMs,
-      });
-      next();
-      return;
+    if (now >= nextCleanup) {
+      for (const [key, bucket] of buckets) if (bucket.resetAt <= now) buckets.delete(key);
+      nextCleanup = now + Math.min(options.windowMs, 60000);
     }
-
-    existing.count += 1;
-
-    if (existing.count > options.maxRequests) {
-      res.setHeader(
-        "Retry-After",
-        Math.ceil((existing.resetAt - now) / 1000).toString(),
-      );
-      return res.status(429).json({
-        message: options.message || "Too many requests",
-      });
+    const key = clientRateLimitKey(req);
+    let bucket = buckets.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      if (!bucket && buckets.size >= 10000) return res.status(429).json({ message: "Demasiadas solicitudes. Intente mas tarde." });
+      bucket = { count: 0, resetAt: now + options.windowMs };
+      buckets.set(key, bucket);
     }
-
+    bucket.count++;
+    res.setHeader("RateLimit-Limit", options.maxRequests);
+    res.setHeader("RateLimit-Remaining", Math.max(0, options.maxRequests - bucket.count));
+    if (bucket.count > options.maxRequests) {
+      res.setHeader("Retry-After", Math.ceil((bucket.resetAt - now) / 1000));
+      return res.status(429).json({ message: options.message || "Too many requests" });
+    }
     next();
   };
 }

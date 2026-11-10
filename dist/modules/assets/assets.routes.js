@@ -2,12 +2,14 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const role_middleware_1 = require("../../middlewares/role.middleware");
+const special_permissions_1 = require("../../utils/special-permissions");
 const assets_controller_1 = require("./assets.controller");
 const router = (0, express_1.Router)();
-router.post("/", auth_middleware_1.authenticate, assets_controller_1.createAssetController);
+router.post("/", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), assets_controller_1.createAssetController);
 router.get("/", auth_middleware_1.authenticate, assets_controller_1.getAllAssetsController);
 router.get("/:id", auth_middleware_1.authenticate, assets_controller_1.getAssetByIdController);
-router.put("/:id", auth_middleware_1.authenticate, assets_controller_1.updateAssetController);
-router.delete("/:id", auth_middleware_1.authenticate, assets_controller_1.deleteAssetController);
-router.put("/:id/vehicle", auth_middleware_1.authenticate, assets_controller_1.upsertVehicleDataController);
+router.put("/:id", auth_middleware_1.authenticate, (0, special_permissions_1.authorizeOrPermission)("FLEET", "ADMIN", "OPERATOR"), assets_controller_1.updateAssetController);
+router.delete("/:id", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), assets_controller_1.deleteAssetController);
+router.put("/:id/vehicle", auth_middleware_1.authenticate, (0, role_middleware_1.authorize)("ADMIN", "OPERATOR"), assets_controller_1.upsertVehicleDataController);
 exports.default = router;

@@ -1,31 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.assignUsersToShiftSchema = exports.listShiftsQuerySchema = exports.createShiftSchema = void 0;
+exports.assignUsersToShiftSchema = exports.listShiftsQuerySchema = exports.updateShiftSchema = exports.createShiftSchema = void 0;
 const zod_1 = require("zod");
-const timeSchema = zod_1.z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
-    message: "El horario debe tener formato HH:mm",
-});
-function timeToMinutes(value) {
-    const [hours, minutes] = value.split(":").map(Number);
-    return hours * 60 + minutes;
-}
 exports.createShiftSchema = zod_1.z
     .object({
     date: zod_1.z.string().date(),
-    startTime: timeSchema,
-    endTime: timeSchema,
-    shiftType: zod_1.z.string().trim().min(2).max(60),
-    notes: zod_1.z.string().trim().optional().or(zod_1.z.literal("")),
-    assignedUserIds: zod_1.z.array(zod_1.z.string().min(1)).optional(),
+    period: zod_1.z.enum(["DAY", "NIGHT"]),
+    notes: zod_1.z.string().trim().max(4000).optional().or(zod_1.z.literal("")),
+    assignedUserIds: zod_1.z.array(zod_1.z.string().min(1)).min(1, "Seleccione al menos una persona"),
 })
     .superRefine((value, ctx) => {
-    if (timeToMinutes(value.endTime) <= timeToMinutes(value.startTime)) {
-        ctx.addIssue({
-            code: "custom",
-            path: ["endTime"],
-            message: "La hora de fin debe ser posterior a la hora de inicio",
-        });
-    }
     if (value.assignedUserIds) {
         const uniqueIds = new Set(value.assignedUserIds);
         if (uniqueIds.size !== value.assignedUserIds.length) {
@@ -37,10 +21,14 @@ exports.createShiftSchema = zod_1.z
         }
     }
 });
+exports.updateShiftSchema = exports.createShiftSchema;
 exports.listShiftsQuerySchema = zod_1.z.object({
     date: zod_1.z.string().date().optional(),
     from: zod_1.z.string().date().optional(),
     to: zod_1.z.string().date().optional(),
+}).refine((value) => !value.from || !value.to || value.from <= value.to, {
+    path: ["to"],
+    message: "La fecha final debe ser igual o posterior a la inicial",
 });
 exports.assignUsersToShiftSchema = zod_1.z.object({
     userIds: zod_1.z.array(zod_1.z.string().min(1)).min(1),

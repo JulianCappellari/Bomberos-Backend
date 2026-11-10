@@ -1,0 +1,15 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const role_middleware_1 = require("../../middlewares/role.middleware");
+const compliance_controller_1 = require("./compliance.controller");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.authenticate);
+router.use((0, role_middleware_1.authorize)("ADMIN", "OPERATOR", "GUARD"));
+router.get("/", compliance_controller_1.listComplianceRecordsController);
+router.get("/summary", compliance_controller_1.getComplianceSummaryController);
+router.post("/", (0, role_middleware_1.authorize)("ADMIN", "OPERATOR", "GUARD"), compliance_controller_1.createComplianceRecordController);
+router.put("/:id", (0, role_middleware_1.authorize)("ADMIN", "OPERATOR", "GUARD"), compliance_controller_1.updateComplianceRecordController);
+router.delete("/:id", (0, role_middleware_1.authorize)("ADMIN", "OPERATOR", "GUARD"), compliance_controller_1.deleteComplianceRecordController);
+exports.default = router;

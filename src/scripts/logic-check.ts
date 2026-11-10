@@ -1,9 +1,17 @@
 import "dotenv/config";
+import { auditActorRequired } from "../utils/audit-rules";
 import { PrismaClient } from "@prisma/client";
 import {
   isAllowedFirefighterRank,
   isCommandRank,
 } from "../utils/firefighter-ranks";
+import { evaluateOperationalReadiness } from "../modules/dashboard/readiness.service";
+import { selectEligibleResponderIds } from "../modules/incidents/incidents.service";
+import { evaluateComplianceStatus } from "../modules/compliance/compliance.service";
+import { shiftsOverlap } from "../modules/shifts/shifts.rules";
+import { stationDate } from "../utils/station-time";
+import { filterRemaining, hydroCurrent } from "../modules/air/air.rules";
+import { z } from "zod";
 
 const prisma = new PrismaClient();
 const VEHICLE_CONTROL_INTERVAL_DAYS = 7;
@@ -28,21 +36,6 @@ function report(code: string, message: string, entityId?: string) {
 
 function dateKey(value: Date) {
   return value.toISOString().slice(0, 10);
-}
-
-function timeToMinutes(value: string) {
-  const [hours, minutes] = value.split(":").map(Number);
-  return hours * 60 + minutes;
-}
-
-function rangesOverlap(
-  startA: string,
-  endA: string,
-  startB: string,
-  endB: string,
-) {
-  return timeToMinutes(startA) < timeToMinutes(endB) &&
-    timeToMinutes(startB) < timeToMinutes(endA);
 }
 
 function pushGroup<T>(groups: Map<string, T[]>, key: string, value: T) {
@@ -116,7 +109,14 @@ async function checkAttendance() {
   const openAttendances = await prisma.attendance.findMany({
     where: { status: "OPEN" },
     include: {
-      user: { select: { username: true } },
+      user: {
+        select: {
+          username: true,
+          isActive: true,
+          isPendingApproval: true,
+          deletedAt: true,
+        },
+      },
       station: { select: { name: true } },
     },
   });
@@ -129,6 +129,34 @@ async function checkAttendance() {
       report(
         "ATTENDANCE_OPEN_WITH_CHECKOUT",
         `Asistencia abierta con salida: ${attendance.user.username}`,
+        attendance.id,
+      );
+    }
+
+    if (!attendance.checkInAt) {
+      report(
+        "ATTENDANCE_OPEN_WITHOUT_CHECKIN",
+        `Asistencia abierta sin ingreso: ${attendance.user.username}`,
+        attendance.id,
+      );
+    }
+
+    if (attendance.checkInTrust === "REJECTED") {
+      report(
+        "ATTENDANCE_OPEN_WITH_REJECTED_TRUST",
+        `Asistencia abierta con validacion rechazada: ${attendance.user.username}`,
+        attendance.id,
+      );
+    }
+
+    if (
+      !attendance.user.isActive ||
+      attendance.user.isPendingApproval ||
+      attendance.user.deletedAt
+    ) {
+      report(
+        "ATTENDANCE_OPEN_USER_NOT_ALLOWED",
+        `Usuario no habilitado figura presente: ${attendance.user.username}`,
         attendance.id,
       );
     }
@@ -194,7 +222,12 @@ async function checkShifts() {
   });
 
   for (const shift of shifts) {
-    if (timeToMinutes(shift.endTime) <= timeToMinutes(shift.startTime)) {
+    const expected = shift.period === "DAY"
+      ? { startTime: "08:00", endTime: "20:00" }
+      : shift.period === "NIGHT"
+        ? { startTime: "20:00", endTime: "08:00" }
+        : null;
+    if (expected && (shift.startTime !== expected.startTime || shift.endTime !== expected.endTime)) {
       report(
         "SHIFT_INVALID_TIME_RANGE",
         `Guardia con horario invalido: ${shift.shiftType}`,
@@ -225,6 +258,17 @@ async function checkShifts() {
       }
       seenUsers.add(assignment.userId);
     }
+
+    if (
+      dateKey(shift.date) >= dateKey(new Date()) &&
+      shift.assignments.length === 0
+    ) {
+      report(
+        "UPCOMING_SHIFT_WITHOUT_STAFF",
+        `Guardia actual o futura sin personal: ${shift.shiftType}`,
+        shift.id,
+      );
+    }
   }
 
   for (let index = 0; index < shifts.length; index += 1) {
@@ -232,14 +276,12 @@ async function checkShifts() {
     for (let nextIndex = index + 1; nextIndex < shifts.length; nextIndex += 1) {
       const next = shifts[nextIndex];
 
-      if (dateKey(current.date) !== dateKey(next.date)) continue;
+      if (next.date.getTime() - current.date.getTime() > DAY_MS) break;
 
       if (
-        !rangesOverlap(
-          current.startTime,
-          current.endTime,
-          next.startTime,
-          next.endTime,
+        !shiftsOverlap(
+          { date: dateKey(current.date), startTime: current.startTime, endTime: current.endTime },
+          { date: dateKey(next.date), startTime: next.startTime, endTime: next.endTime },
         )
       ) {
         continue;
@@ -268,7 +310,15 @@ async function checkInspections() {
   checkPath();
   const inspections = await prisma.inspection.findMany({
     include: {
-      items: true,
+      items: {
+        include: {
+          inventoryItem: {
+            include: {
+              compartment: true,
+            },
+          },
+        },
+      },
       responsibles: {
         include: {
           user: true,
@@ -283,6 +333,14 @@ async function checkInspections() {
   });
 
   for (const inspection of inspections) {
+    if (inspection.inspectionDate.getTime() > Date.now() + DAY_MS) {
+      report(
+        "INSPECTION_DATE_IN_FUTURE",
+        `Inspeccion con fecha futura: ${inspection.vehicle.asset.name}`,
+        inspection.id,
+      );
+    }
+
     const summaryOk = inspection.items.filter(
       (item) => item.result === "OK",
     ).length;
@@ -327,6 +385,24 @@ async function checkInspections() {
           "INSPECTION_RESPONSIBLE_NOT_ALLOWED",
           `Responsable no habilitado en inspeccion: ${responsible.user.username}`,
           inspection.id,
+        );
+      }
+    }
+
+    for (const item of inspection.items) {
+      if (item.inventoryItem.compartment.vehicleId !== inspection.vehicleId) {
+        report(
+          "INSPECTION_ITEM_FROM_ANOTHER_VEHICLE",
+          `Control de ${inspection.vehicle.asset.name} incluye un elemento de otro vehiculo`,
+          item.id,
+        );
+      }
+
+      if (item.expectedQuantity < 1) {
+        report(
+          "INSPECTION_ITEM_INVALID_QUANTITY",
+          `Elemento controlado con cantidad invalida: ${item.inventoryItem.name}`,
+          item.id,
         );
       }
     }
@@ -392,7 +468,13 @@ async function checkAlertsAndIncidents() {
     },
   });
 
+  const incidentsByAlert = new Map<string, typeof incidents>();
+
   for (const incident of incidents) {
+    if (incident.alertId) {
+      pushGroup(incidentsByAlert, incident.alertId, incident);
+    }
+
     if (
       incident.status === "CLOSED" &&
       (!incident.closedAt || !incident.closedByUserId)
@@ -436,6 +518,14 @@ async function checkAlertsAndIncidents() {
       );
     }
 
+    if (incident.status === "OPEN" && incident.alert?.status === "RESOLVED") {
+      report(
+        "INCIDENT_OPEN_WITH_RESOLVED_ALERT",
+        `Incidente abierto vinculado a alerta resuelta: ${incident.title}`,
+        incident.id,
+      );
+    }
+
     for (const assignment of incident.assignments) {
       if (
         !assignment.user.isActive ||
@@ -448,6 +538,16 @@ async function checkAlertsAndIncidents() {
           incident.id,
         );
       }
+    }
+  }
+
+  for (const [alertId, linkedIncidents] of incidentsByAlert.entries()) {
+    if (linkedIncidents.length > 1) {
+      report(
+        "ALERT_WITH_MULTIPLE_INCIDENTS",
+        `Alerta vinculada a ${linkedIncidents.length} incidentes`,
+        alertId,
+      );
     }
   }
 }
@@ -711,7 +811,11 @@ async function checkInventory() {
 
 async function checkAuditLogs() {
   checkPath();
-  const logs = await prisma.auditLog.findMany();
+  const logs = await prisma.auditLog.findMany({
+    include: {
+      actor: true,
+    },
+  });
 
   for (const log of logs) {
     if (log.action.trim().length === 0 || log.entityType.trim().length === 0) {
@@ -722,12 +826,307 @@ async function checkAuditLogs() {
       );
     }
 
+    if (!/^[A-Z0-9_]+$/.test(log.action)) {
+      report(
+        "AUDIT_LOG_INVALID_ACTION_FORMAT",
+        `Registro de auditoria con accion no normalizada: ${log.action}`,
+        log.id,
+      );
+    }
+
+    if (log.entityType !== log.entityType.trim()) {
+      report(
+        "AUDIT_LOG_ENTITY_TYPE_NOT_TRIMMED",
+        `Registro de auditoria con entidad sin normalizar: ${log.entityType}`,
+        log.id,
+      );
+    }
+
+    if (!log.actorUserId && auditActorRequired(log.action, log.entityType, log.metadata)) {
+      report(
+        "AUDIT_LOG_MUTATION_WITHOUT_ACTOR",
+        `Registro de auditoria operativo sin actor: ${log.action}`,
+        log.id,
+      );
+    }
+
+    // Historical actions remain valid after the actor's account is deactivated.
+
     if (containsSensitiveMetadataKey(log.metadata)) {
       report(
         "AUDIT_LOG_SENSITIVE_METADATA_KEY",
         `Registro de auditoria con clave sensible en metadata: ${log.action}`,
         log.id,
       );
+    }
+  }
+}
+
+async function checkComplianceRecords() {
+  checkPath();
+  const records = await prisma.complianceRecord.findMany({
+    where: { deletedAt: null },
+    include: { user: true, asset: true },
+  });
+
+  for (const record of records) {
+    const validUserSubject =
+      record.subjectType === "USER" &&
+      Boolean(record.userId) &&
+      !record.assetId &&
+      record.user?.isActive &&
+      !record.user.isPendingApproval &&
+      !record.user.deletedAt;
+    const validAssetSubject =
+      record.subjectType === "ASSET" &&
+      Boolean(record.assetId) &&
+      !record.userId &&
+      record.asset &&
+      !record.asset.deletedAt;
+
+    if (!validUserSubject && !validAssetSubject) {
+      report(
+        "COMPLIANCE_INVALID_SUBJECT",
+        `Registro de cumplimiento con sujeto invalido: ${record.title}`,
+        record.id,
+      );
+    }
+    if (record.warningDays < 0 || record.warningDays > 3650) {
+      report(
+        "COMPLIANCE_INVALID_WARNING_DAYS",
+        `Anticipacion invalida en: ${record.title}`,
+        record.id,
+      );
+    }
+    if (
+      record.issuedAt &&
+      record.expiresAt &&
+      record.expiresAt.getTime() < record.issuedAt.getTime()
+    ) {
+      report(
+        "COMPLIANCE_INVALID_DATE_ORDER",
+        `Vencimiento anterior a emision: ${record.title}`,
+        record.id,
+      );
+    }
+  }
+}
+
+function checkOperationalReadinessRules() {
+  const cases = [
+    {
+      name: "sin personal",
+      expected: "NOT_READY",
+      input: {
+        presentCount: 0,
+        commandPresentCount: 0,
+        readyVehicleCount: 1,
+        recommendedCrewSize: 3,
+        activeShift: null,
+      },
+    },
+    {
+      name: "sin vehiculo listo",
+      expected: "NOT_READY",
+      input: {
+        presentCount: 3,
+        commandPresentCount: 1,
+        readyVehicleCount: 0,
+        recommendedCrewSize: 3,
+        activeShift: { assignedCount: 3, presentAssignedCount: 3 },
+      },
+    },
+    {
+      name: "dotacion reducida",
+      expected: "LIMITED",
+      input: {
+        presentCount: 2,
+        commandPresentCount: 1,
+        readyVehicleCount: 1,
+        recommendedCrewSize: 3,
+        activeShift: { assignedCount: 2, presentAssignedCount: 2 },
+      },
+    },
+    {
+      name: "guardia incompleta",
+      expected: "LIMITED",
+      input: {
+        presentCount: 3,
+        commandPresentCount: 1,
+        readyVehicleCount: 1,
+        recommendedCrewSize: 3,
+        activeShift: { assignedCount: 4, presentAssignedCount: 3 },
+      },
+    },
+    {
+      name: "alistamiento completo",
+      expected: "READY",
+      input: {
+        presentCount: 3,
+        commandPresentCount: 1,
+        readyVehicleCount: 1,
+        recommendedCrewSize: 3,
+        activeShift: { assignedCount: 3, presentAssignedCount: 3 },
+      },
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    checkPath();
+    const result = evaluateOperationalReadiness(testCase.input);
+    if (result.status !== testCase.expected) {
+      report(
+        "OPERATIONAL_READINESS_RULE_MISMATCH",
+        `La regla '${testCase.name}' devolvio ${result.status} y se esperaba ${testCase.expected}`,
+      );
+    }
+  }
+
+}
+
+function checkIncidentDispatchRules() {
+  const baseUser = {
+    isActive: true,
+    isPendingApproval: false,
+    deletedAt: null,
+  };
+  const cases = [
+    {
+      name: "asigna confirmados habilitados",
+      expected: ["going-active"],
+      responses: [
+        { userId: "going-active", response: "GOING", user: baseUser },
+        { userId: "not-going", response: "NOT_GOING", user: baseUser },
+      ],
+    },
+    {
+      name: "excluye usuarios inactivos",
+      expected: [],
+      responses: [
+        {
+          userId: "inactive",
+          response: "GOING",
+          user: { ...baseUser, isActive: false },
+        },
+      ],
+    },
+    {
+      name: "excluye usuarios pendientes y eliminados",
+      expected: [],
+      responses: [
+        {
+          userId: "pending",
+          response: "GOING",
+          user: { ...baseUser, isPendingApproval: true },
+        },
+        {
+          userId: "deleted",
+          response: "GOING",
+          user: { ...baseUser, deletedAt: new Date() },
+        },
+      ],
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    checkPath();
+    const actual = selectEligibleResponderIds(testCase.responses);
+    if (actual.join(",") !== testCase.expected.join(",")) {
+      report(
+        "INCIDENT_DISPATCH_ASSIGNMENT_RULE_MISMATCH",
+        `La regla '${testCase.name}' asigno [${actual.join(", ")}]`,
+      );
+    }
+  }
+}
+
+function checkComplianceRules() {
+  const now = new Date("2026-08-26T12:00:00.000Z");
+  const cases = [
+    { name: "sin vencimiento", expiresAt: null, warningDays: 30, expected: "NO_EXPIRY" },
+    { name: "vigente", expiresAt: new Date("2026-10-26T12:00:00.000Z"), warningDays: 30, expected: "VALID" },
+    { name: "limite de aviso", expiresAt: new Date("2026-09-25T12:00:00.000Z"), warningDays: 30, expected: "DUE_SOON" },
+    { name: "vencido", expiresAt: new Date("2026-08-25T12:00:00.000Z"), warningDays: 30, expected: "EXPIRED" },
+  ] as const;
+
+  for (const testCase of cases) {
+    checkPath();
+    const actual = evaluateComplianceStatus(
+      testCase.expiresAt,
+      testCase.warningDays,
+      now,
+    );
+    if (actual.status !== testCase.expected) {
+      report(
+        "COMPLIANCE_STATUS_RULE_MISMATCH",
+        `La regla '${testCase.name}' devolvio ${actual.status} y se esperaba ${testCase.expected}`,
+      );
+    }
+  }
+}
+
+async function checkPersonalEquipment() {
+  checkPath();
+  const items = await prisma.personalEquipment.findMany({ include: {
+    asset: { include: { maintenanceJobs: { where: { blocksOperation: true } } } },
+    issues: { orderBy: { issuedAt: "desc" } }, checks: { orderBy: [{ checkedAt: "desc" }, { id: "desc" }], take: 1 },
+  } });
+  for (const item of items) {
+    const open = item.issues.filter((issue) => !issue.returnedAt);
+    if (item.asset.assetType !== "PPE") report("PPE_INVALID_ASSET_TYPE", `Tipo de activo incompatible: ${item.code}`, item.id);
+    if (open.length > 1) report("PPE_MULTIPLE_HOLDERS", `Varias entregas activas: ${item.code}`, item.id);
+    if (item.archivedAt && (open.length || item.asset.status !== "OUT_OF_SERVICE")) report("PPE_ARCHIVE_INCONSISTENT", `Baja con entrega o estado incompatible: ${item.code}`, item.id);
+    for (const issue of item.issues) {
+      if (issue.returnedAt && (issue.returnedAt < issue.issuedAt || !issue.receivedByUserId || !issue.returnCondition)) report("PPE_RETURN_INCONSISTENT", `Devolucion inconsistente: ${item.code}`, issue.id);
+    }
+    if (!item.archivedAt && item.asset.status === "OPERATIONAL") {
+      const check = item.checks[0];
+      const lastReturn = item.issues.filter((issue) => issue.returnedAt).reduce((latest, issue) => Math.max(latest, issue.returnedAt!.getTime()), 0);
+      const lastMaintenance = item.asset.maintenanceJobs.reduce((latest, job) => Math.max(latest, job.resolvedAt?.getTime() || 0), 0);
+      if (!check || check.condition !== "OK" || check.checkedAt.getTime() < Math.max(lastReturn, lastMaintenance)) report("PPE_OPERATIONAL_WITHOUT_VALID_CHECK", `Falta revision posterior a devolucion o reparacion: ${item.code}`, item.id);
+      if (item.asset.maintenanceJobs.some((job) => job.status === "OPEN" || job.status === "IN_PROGRESS")) report("PPE_BLOCKING_MAINTENANCE", `Elemento operativo con mantenimiento bloqueante: ${item.code}`, item.id);
+    }
+  }
+  checkPath();
+  const requests = await prisma.personalEquipmentRequest.findMany({ include: { fulfilledIssue: true } });
+  for (const request of requests) {
+    if (request.reviewedByUserId === request.userId) report("PPE_SELF_REVIEW", "Pedido revisado por su propio solicitante", request.id);
+    if (request.reviewedAt && request.reviewedAt < request.createdAt) report("PPE_REQUEST_REVIEW_TIME", "Pedido revisado antes de su creacion", request.id);
+    if (request.status === "FULFILLED" && (!request.fulfilledIssue || request.fulfilledIssue.userId !== request.userId || !request.fulfilledAt || !request.reviewedAt || request.fulfilledIssue.issuedAt < request.reviewedAt)) report("PPE_REQUEST_FULFILLMENT", "Pedido entregado sin aprobacion previa o con destinatario incompatible", request.id);
+  }
+}
+
+async function checkAirEquipment() {
+  checkPath();
+  const cylinders = await prisma.airCylinder.findMany({ include: { asset: true, vehicle: true, hydroTests: { take: 1, orderBy: [{ testedOn: "desc" }, { createdAt: "desc" }, { id: "desc" }] }, fillItems: { include: { fill: true } } } });
+  for (const row of cylinders) {
+    if (row.asset.assetType !== "PPE" || row.pressureBar !== null && (row.pressureBar < 0 || row.pressureBar > row.ratedPressureBar)) report("AIR_CYLINDER_INVALID", "Tipo o presion de cilindro incompatible", row.id);
+    if (row.retiredAt && row.asset.status !== "OUT_OF_SERVICE") report("AIR_CYLINDER_RETIRED_STATE", "Cilindro dado de baja con estado operativo", row.id);
+    if (!row.retiredAt && row.vehicle && (row.vehicle.assetType !== "VEHICLE" || row.vehicle.deletedAt)) report("AIR_CYLINDER_LOCATION_INVALID", "Ubicacion del cilindro no corresponde a un movil activo", row.id);
+    if (!row.retiredAt && row.asset.status === "OPERATIONAL" && (!row.reviewedAt || !hydroCurrent(row.hydroTests[0], stationDate()))) report("AIR_CYLINDER_REVIEW_REQUIRED", "Cilindro operativo sin revision o con prueba vencida", row.id);
+    const intervals = row.fillItems.map((item) => item.fill).sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime());
+    for (let index = 1; index < intervals.length; index++) if (intervals[index].startedAt < intervals[index - 1].endedAt) report("AIR_CYLINDER_OVERLAPPING_FILLS", "Cargas solapadas para un mismo cilindro", row.id);
+  }
+  checkPath();
+  const compSnapshot = z.object({ maxPressureBar: z.number().int().positive(), totalMinutesBefore: z.number().int().min(0), filterBaselineMinutes: z.number().int().min(0), filterLifeMinutes: z.number().int().positive(), airQualityValidUntil: z.string().datetime() });
+  const tubeSnapshot = z.object({ ratedPressureBar: z.number().int().positive(), hydroValidUntil: z.string().datetime() });
+  const compressors = await prisma.airCompressor.findMany({ include: { asset: true, fills: { include: { items: true, helpers: true }, orderBy: { startedAt: "asc" } } } });
+  for (const row of compressors) {
+    if (row.filterBaselineMinutes > row.totalRunMinutes || row.filterBaselineMinutes < 0 || row.filterLifeMinutes < 1) report("AIR_COMPRESSOR_COUNTER_INVALID", "Contador o limite de filtro incoherente", row.id);
+    if (row.retiredAt && row.asset.status !== "OUT_OF_SERVICE") report("AIR_COMPRESSOR_RETIRED_STATE", "Compresor dado de baja con estado operativo", row.id);
+    if (!row.retiredAt && row.asset.status === "OPERATIONAL" && (!row.reviewedAt || !row.airQualityReference || !row.airQualityValidUntil || row.airQualityValidUntil.toISOString().slice(0, 10) < stationDate() || !filterRemaining(row.totalRunMinutes, row.filterBaselineMinutes, row.filterLifeMinutes))) report("AIR_COMPRESSOR_REVIEW_REQUIRED", "Compresor operativo sin controles vigentes o con filtro agotado", row.id);
+    for (const [index, fill] of row.fills.entries()) {
+      if (index && fill.startedAt < row.fills[index - 1].endedAt) report("AIR_COMPRESSOR_OVERLAP", "Intervalos de compresor solapados", fill.id);
+      if (Math.ceil((fill.endedAt.getTime() - fill.startedAt.getTime()) / 60000) !== fill.runMinutes || fill.runMinutes < 1 || fill.endedAt > new Date()) report("AIR_FILL_TIME_INVALID", "Intervalo o minutos de carga invalidos", fill.id);
+      if (!fill.items.length || fill.helpers.some((helper) => helper.userId === fill.operatorUserId)) report("AIR_FILL_PARTICIPANTS_INVALID", "Carga sin cilindros o con encargado repetido como ayudante", fill.id);
+      const snapshot = compSnapshot.safeParse(fill.compressorSnapshot);
+      if (!snapshot.success) { report("AIR_FILL_SNAPSHOT_INVALID", "Falta instantanea valida del compresor", fill.id); continue; }
+      const state = snapshot.data;
+      if (state.totalMinutesBefore + fill.runMinutes > row.totalRunMinutes || fill.runMinutes > filterRemaining(state.totalMinutesBefore, state.filterBaselineMinutes, state.filterLifeMinutes) || state.airQualityValidUntil.slice(0, 10) < stationDate(fill.endedAt)) report("AIR_FILL_FILTER_INVALID", "Carga incompatible con horas o vigencia documentada", fill.id);
+      for (const item of fill.items) {
+        const tube = tubeSnapshot.safeParse(item.cylinderSnapshot);
+        if (!tube.success || item.pressureBar > tube.data.ratedPressureBar || item.pressureBar > state.maxPressureBar || tube.data.hydroValidUntil.slice(0, 10) < stationDate(fill.endedAt)) report("AIR_FILL_PRESSURE_INVALID", "Presion o vencimiento incompatible con la instantanea del cilindro", fill.id);
+      }
     }
   }
 }
@@ -742,6 +1141,12 @@ async function main() {
   await checkQrAndDevices();
   await checkInventory();
   await checkAuditLogs();
+  await checkComplianceRecords();
+  await checkPersonalEquipment();
+  await checkAirEquipment();
+  checkComplianceRules();
+  checkIncidentDispatchRules();
+  checkOperationalReadinessRules();
 
   if (violations.length > 0) {
     console.error(

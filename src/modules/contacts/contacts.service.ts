@@ -1,0 +1,98 @@
+import { Prisma } from "@prisma/client";
+import { prisma } from "../../config/prisma";
+import { PUBLIC_USER_SELECT } from "../../utils/public-user";
+import { ContactInput } from "./contacts.schemas";
+
+class ContactError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+  }
+}
+
+const include = { createdBy: { select: PUBLIC_USER_SELECT } } as const;
+
+function contactData(input: ContactInput) {
+  return {
+    name: input.name,
+    category: input.category,
+    phone: input.phone?.trim() || null,
+    radioFrequency: input.radioFrequency?.trim() || null,
+    email: input.email?.trim() || null,
+    address: input.address?.trim() || null,
+    notes: input.notes?.trim() || null,
+    isEmergency: input.isEmergency,
+  };
+}
+
+export async function listContacts(filters: { q?: string; category?: string; emergency?: string }) {
+  const where: Prisma.OperationalContactWhereInput = {
+    deletedAt: null,
+    ...(filters.category ? { category: filters.category } : {}),
+    ...(filters.emergency ? { isEmergency: filters.emergency === "true" } : {}),
+  };
+  if (filters.q) {
+    where.OR = ["name", "category", "phone", "radioFrequency", "notes"].map((field) => ({
+      [field]: { contains: filters.q, mode: "insensitive" },
+    }));
+  }
+  return prisma.operationalContact.findMany({
+    where,
+    include,
+    orderBy: [{ isEmergency: "desc" }, { name: "asc" }, { id: "asc" }],
+  });
+}
+
+export async function createContact(input: ContactInput, actorUserId: string) {
+  return prisma.$transaction(async (tx) => {
+    const contact = await tx.operationalContact.create({
+      data: { ...contactData(input), createdByUserId: actorUserId },
+      include,
+    });
+    await tx.auditLog.create({
+      data: {
+        actorUserId, action: "CONTACT_CREATED", entityType: "OperationalContact",
+        entityId: contact.id, metadata: { category: contact.category },
+      },
+    });
+    return contact;
+  });
+}
+
+export async function updateContact(
+  id: string,
+  input: ContactInput & { revision: number },
+  actorUserId: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    const changed = await tx.operationalContact.updateMany({
+      where: { id, revision: input.revision, deletedAt: null },
+      data: { ...contactData(input), revision: { increment: 1 } },
+    });
+    if (!changed.count) throw new ContactError(409, "El contacto fue modificado o eliminado. Recargue la lista antes de editar.");
+    const contact = await tx.operationalContact.findUniqueOrThrow({ where: { id }, include });
+    await tx.auditLog.create({
+      data: {
+        actorUserId, action: "CONTACT_UPDATED", entityType: "OperationalContact",
+        entityId: id, metadata: { revision: contact.revision },
+      },
+    });
+    return contact;
+  });
+}
+
+export async function deleteContact(id: string, revision: number, actorUserId: string) {
+  return prisma.$transaction(async (tx) => {
+    const changed = await tx.operationalContact.updateMany({
+      where: { id, revision, deletedAt: null },
+      data: { deletedAt: new Date(), revision: { increment: 1 } },
+    });
+    if (!changed.count) throw new ContactError(409, "El contacto fue modificado o eliminado. Recargue la lista.");
+    await tx.auditLog.create({
+      data: {
+        actorUserId, action: "CONTACT_DELETED", entityType: "OperationalContact",
+        entityId: id, metadata: { revision },
+      },
+    });
+    return { message: "Contacto eliminado" };
+  });
+}

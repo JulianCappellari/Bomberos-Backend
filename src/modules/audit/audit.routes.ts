@@ -6,7 +6,7 @@ import { listAuditLogsController } from "./audit.controller";
 const router = Router();
 
 router.use(authenticate);
-router.use(authorize("ADMIN", "OPERATOR"));
+router.use(authorize("ADMIN"));
 
 router.get("/", listAuditLogsController);
 

@@ -1,8 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.authenticate = authenticate;
-const jwt_1 = require("../utils/jwt");
-const prisma_1 = require("../config/prisma");
+const auth_session_1 = require("../utils/auth-session");
 async function authenticate(req, res, next) {
     try {
         const authHeader = req.headers.authorization;
@@ -10,25 +9,16 @@ async function authenticate(req, res, next) {
             return res.status(401).json({ message: "Unauthorized" });
         }
         const token = authHeader.split(" ")[1];
-        const payload = (0, jwt_1.verifyAccessToken)(token);
-        const user = await prisma_1.prisma.user.findFirst({
-            where: {
-                id: payload.userId,
-                isActive: true,
-                isPendingApproval: false,
-                deletedAt: null,
-            },
-            select: {
-                id: true,
-                role: true,
-            },
-        });
-        if (!user) {
-            return res.status(401).json({ message: "User is not allowed to access" });
+        const user = await (0, auth_session_1.authenticateAccessToken)(token);
+        if (user.mustChangePassword && !req.originalUrl.startsWith("/api/auth/")) {
+            return res.status(403).json({ code: "PASSWORD_CHANGE_REQUIRED", message: "Debe cambiar su contrasena inicial" });
         }
         req.user = {
-            userId: user.id,
+            userId: user.userId,
             role: user.role,
+            rank: user.rank,
+            sessionId: user.sessionId,
+            permissions: user.permissions,
         };
         next();
     }

@@ -68,7 +68,7 @@ export async function updateUserController(req: Request, res: Response) {
 
     return res.status(200).json(user);
   } catch (error: any) {
-    return res.status(400).json({
+    return res.status(error.status || 400).json({
       message: error.message || "Failed to update user",
     });
   }

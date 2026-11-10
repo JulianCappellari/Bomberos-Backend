@@ -6,8 +6,8 @@ const firefighter_ranks_1 = require("../../utils/firefighter-ranks");
 exports.createUserSchema = zod_1.z.object({
     username: zod_1.z.string().min(3).max(50),
     email: zod_1.z.string().email().optional().or(zod_1.z.literal("")),
-    password: zod_1.z.string().min(6).max(100),
-    role: zod_1.z.enum(["ADMIN", "FIREFIGHTER", "OPERATOR"]),
+    password: zod_1.z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, "utf8") <= 72, "La clave no debe superar 72 bytes"),
+    role: zod_1.z.enum(["ADMIN", "FIREFIGHTER", "OPERATOR", "GUARD"]),
     fullName: zod_1.z.string().min(3).max(120),
     dni: zod_1.z.string().min(6).max(20),
     rank: zod_1.z.enum(firefighter_ranks_1.FIREFIGHTER_RANKS),
@@ -27,8 +27,9 @@ exports.createUserSchema = zod_1.z.object({
         .optional(),
 });
 exports.updateUserSchema = zod_1.z.object({
+    revision: zod_1.z.string().datetime().optional(),
     email: zod_1.z.string().email().optional().or(zod_1.z.literal("")),
-    role: zod_1.z.enum(["ADMIN", "FIREFIGHTER", "OPERATOR"]).optional(),
+    role: zod_1.z.enum(["ADMIN", "FIREFIGHTER", "OPERATOR", "GUARD"]).optional(),
     isActive: zod_1.z.boolean().optional(),
     fullName: zod_1.z.string().min(3).max(120).optional(),
     dni: zod_1.z.string().min(6).max(20).optional(),

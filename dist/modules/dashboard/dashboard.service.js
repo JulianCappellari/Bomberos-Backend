@@ -3,7 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getDashboardSummary = getDashboardSummary;
 const prisma_1 = require("../../config/prisma");
 const attendance_service_1 = require("../attendance/attendance.service");
-const OPS_ROLES = new Set(["ADMIN", "OPERATOR"]);
+const compliance_service_1 = require("../compliance/compliance.service");
+const OPS_ROLES = new Set(["ADMIN", "OPERATOR", "GUARD"]);
 const VEHICLE_CONTROL_INTERVAL_DAYS = 7;
 const VEHICLE_CONTROL_DUE_SOON_DAYS = 2;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -11,6 +12,15 @@ function addDays(date, days) {
     const next = new Date(date);
     next.setDate(next.getDate() + days);
     return next;
+}
+function localDateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+}
+function dateOnlyFromKey(key) {
+    return new Date(`${key}T00:00:00.000Z`);
 }
 function formatAlertTitle(type) {
     const labels = {
@@ -24,9 +34,58 @@ function formatAlertTitle(type) {
     };
     return labels[type] ?? "Alerta";
 }
+const SHIFT_SUMMARY_INCLUDE = {
+    assignments: {
+        include: {
+            user: {
+                select: {
+                    id: true,
+                    username: true,
+                    role: true,
+                    profile: {
+                        select: {
+                            fullName: true,
+                            rank: true,
+                            badge: true,
+                        },
+                    },
+                },
+            },
+        },
+    },
+};
+function mapShiftSummary(shift) {
+    return {
+        id: shift.id,
+        date: shift.date,
+        startTime: shift.startTime,
+        endTime: shift.endTime,
+        shiftType: shift.shiftType,
+        notes: shift.notes,
+        assignedCount: shift.assignments.length,
+        assignments: shift.assignments.map((assignment) => ({
+            id: assignment.id,
+            user: {
+                id: assignment.user.id,
+                username: assignment.user.username,
+                role: assignment.user.role,
+                fullName: assignment.user.profile?.fullName ?? null,
+                rank: assignment.user.profile?.rank ?? null,
+                badge: assignment.user.profile?.badge ?? null,
+            },
+        })),
+    };
+}
 async function getDashboardSummary(userId, role) {
     const canSeeOps = OPS_ROLES.has(role) || role === "FIREFIGHTER";
-    const [attendance, myOpenAttendance, recentAlerts, activeAlerts] = await Promise.all([
+    const now = new Date();
+    const todayKey = localDateKey(now);
+    const todayDate = dateOnlyFromKey(todayKey);
+    const shiftRangeStart = now.getHours() < 8
+        ? dateOnlyFromKey(localDateKey(addDays(now, -1)))
+        : todayDate;
+    const upcomingToDate = dateOnlyFromKey(localDateKey(addDays(now, 14)));
+    const [attendance, myOpenAttendance, recentAlerts, activeAlerts, myUpcomingShifts,] = await Promise.all([
         (0, attendance_service_1.getMyAttendanceSummary)(userId),
         prisma_1.prisma.attendance.findFirst({
             where: {
@@ -62,11 +121,28 @@ async function getDashboardSummary(userId, role) {
                 status: "ACTIVE",
             },
         }),
+        prisma_1.prisma.shift.findMany({
+            where: {
+                date: {
+                    gte: shiftRangeStart,
+                    lte: upcomingToDate,
+                },
+                assignments: {
+                    some: {
+                        userId,
+                    },
+                },
+            },
+            take: 5,
+            orderBy: [{ date: "asc" }, { startTime: "asc" }],
+            include: SHIFT_SUMMARY_INCLUDE,
+        }),
     ]);
     const baseSummary = {
         attendance,
         myOpenAttendance,
         activeAlerts,
+        myUpcomingShifts: myUpcomingShifts.map(mapShiftSummary),
         recentAlerts: recentAlerts.map((alert) => ({
             id: alert.id,
             title: formatAlertTitle(alert.type),
@@ -88,7 +164,7 @@ async function getDashboardSummary(userId, role) {
     if (!canSeeOps) {
         return baseSummary;
     }
-    const [openIncidents, inStation, activeUsers, pendingApplications, totalVehicles, operationalVehicles, maintenanceVehicles, outOfServiceVehicles, vehiclesNeedingAttention, recentInspections, vehiclesForControl, recentActivity,] = await Promise.all([
+    const [openIncidents, inStation, activeUsers, pendingApplications, totalVehicles, operationalVehicles, maintenanceVehicles, outOfServiceVehicles, vehiclesNeedingAttention, recentInspections, vehiclesForControl, todayShifts, recentActivity, complianceExpirations,] = await Promise.all([
         prisma_1.prisma.incident.count({
             where: {
                 status: "OPEN",
@@ -97,6 +173,15 @@ async function getDashboardSummary(userId, role) {
         prisma_1.prisma.attendance.count({
             where: {
                 status: "OPEN",
+                checkInAt: {
+                    not: null,
+                },
+                user: {
+                    missionCrew: { none: { movement: { returnedAt: null } } },
+                    deletedAt: null,
+                    isActive: true,
+                    isPendingApproval: false,
+                },
             },
         }),
         prisma_1.prisma.user.count({
@@ -156,7 +241,7 @@ async function getDashboardSummary(userId, role) {
         }),
         prisma_1.prisma.inspection.findMany({
             take: 5,
-            orderBy: [{ inspectionDate: "desc" }, { createdAt: "desc" }],
+            orderBy: [{ inspectionDate: "desc" }, { inspectionTime: "desc" }, { createdAt: "desc" }],
             include: {
                 vehicle: {
                     include: {
@@ -177,8 +262,9 @@ async function getDashboardSummary(userId, role) {
             include: {
                 asset: true,
                 inspections: {
+                    where: { voidedAt: null },
                     take: 1,
-                    orderBy: [{ inspectionDate: "desc" }, { createdAt: "desc" }],
+                    orderBy: [{ inspectionDate: "desc" }, { inspectionTime: "desc" }, { createdAt: "desc" }],
                     select: {
                         id: true,
                         inspectionDate: true,
@@ -189,7 +275,14 @@ async function getDashboardSummary(userId, role) {
                 },
             },
         }),
-        prisma_1.prisma.auditLog.findMany({
+        prisma_1.prisma.shift.findMany({
+            where: {
+                date: { gte: shiftRangeStart, lte: todayDate },
+            },
+            orderBy: [{ startTime: "asc" }],
+            include: SHIFT_SUMMARY_INCLUDE,
+        }),
+        role === "ADMIN" ? prisma_1.prisma.auditLog.findMany({
             take: 8,
             orderBy: {
                 createdAt: "desc",
@@ -201,9 +294,12 @@ async function getDashboardSummary(userId, role) {
                     },
                 },
             },
-        }),
+        }) : Promise.resolve([]),
+        OPS_ROLES.has(role) ? prisma_1.prisma.complianceRecord.findMany({
+            where: { deletedAt: null, expiresAt: { not: null } },
+            select: { expiresAt: true, warningDays: true },
+        }) : Promise.resolve([]),
     ]);
-    const now = new Date();
     const vehicleControlItems = vehiclesForControl.map((vehicle) => {
         const latestInspection = vehicle.inspections[0] ?? null;
         if (!latestInspection) {
@@ -255,6 +351,61 @@ async function getDashboardSummary(userId, role) {
         };
     });
     const vehicleControlsRequiringAttention = vehicleControlItems.filter((item) => item.readiness !== "OK");
+    const activeAlertsWithoutResponses = recentAlerts.filter((alert) => alert.responses.length === 0).length;
+    const todayShiftsWithoutStaff = todayShifts.filter((shift) => shift.assignments.length === 0).length;
+    const complianceRequiringAttention = complianceExpirations.filter((record) => ["EXPIRED", "DUE_SOON"].includes((0, compliance_service_1.evaluateComplianceStatus)(record.expiresAt, record.warningDays, now).status)).length;
+    const operationalWarnings = [
+        ...(todayShifts.length === 0
+            ? [
+                {
+                    code: "NO_SHIFT_TODAY",
+                    severity: "HIGH",
+                    message: "No hay guardias cargadas para hoy.",
+                    href: "/calendar",
+                },
+            ]
+            : []),
+        ...(todayShiftsWithoutStaff > 0
+            ? [
+                {
+                    code: "SHIFT_WITHOUT_STAFF",
+                    severity: "HIGH",
+                    message: `${todayShiftsWithoutStaff} guardia(s) de hoy no tienen personal asignado.`,
+                    href: "/calendar",
+                },
+            ]
+            : []),
+        ...(activeAlertsWithoutResponses > 0
+            ? [
+                {
+                    code: "ACTIVE_ALERT_WITHOUT_RESPONSES",
+                    severity: "MEDIUM",
+                    message: `${activeAlertsWithoutResponses} alerta(s) activas todavia no tienen respuestas.`,
+                    href: "/alerts",
+                },
+            ]
+            : []),
+        ...(vehicleControlsRequiringAttention.length > 0
+            ? [
+                {
+                    code: "VEHICLE_CONTROLS_ATTENTION",
+                    severity: "MEDIUM",
+                    message: `${vehicleControlsRequiringAttention.length} vehiculo(s) requieren revisar controles.`,
+                    href: "/equipment",
+                },
+            ]
+            : []),
+        ...(complianceRequiringAttention > 0
+            ? [
+                {
+                    code: "COMPLIANCE_ATTENTION",
+                    severity: "MEDIUM",
+                    message: `${complianceRequiringAttention} vencimiento(s) requieren atencion.`,
+                    href: "/compliance",
+                },
+            ]
+            : []),
+    ];
     return {
         ...baseSummary,
         ops: {
@@ -262,6 +413,8 @@ async function getDashboardSummary(userId, role) {
             inStation,
             activeUsers,
             pendingApplications,
+            todayShifts: todayShifts.map(mapShiftSummary),
+            operationalWarnings,
             vehicles: {
                 total: totalVehicles,
                 operational: operationalVehicles,

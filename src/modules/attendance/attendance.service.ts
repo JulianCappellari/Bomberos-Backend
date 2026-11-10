@@ -1,7 +1,14 @@
+import { gpsSuspicionReasons, recordGpsSuspicion } from "../../utils/gps-suspicion";
 import { prisma } from "../../config/prisma";
+import { creditedServices } from "../incidents/credited-services";
+import { effectiveAccessRole, normalizeRank } from "../../utils/firefighter-ranks";
+import { OperationError } from "../operations/operations.schemas";
+import { reportBounds, unionMilliseconds } from "../operations/reports.service";
+import { stationDate } from "../../utils/station-time";
+import { serializable } from "../../utils/transaction";
 import { generatePlainToken, getDistanceMeters, sha256 } from "./attendance.utils";
 
-const QR_EXPIRATION_SECONDS = 60;
+const QR_EXPIRATION_SECONDS = 30;
 const MAX_ALLOWED_DISTANCE_METERS = 120;
 const MAX_ALLOWED_ACCURACY_METERS = 2000; //cambiar a 150
 
@@ -16,6 +23,7 @@ export async function createAttendanceQrChallenge(
   stationId: string,
   createdByUserId?: string,
 ) {
+  return serializable(async (prisma) => {
   const station = await prisma.station.findUnique({
     where: { id: stationId },
   });
@@ -23,6 +31,12 @@ export async function createAttendanceQrChallenge(
   if (!station) {
     throw new Error("Station not found");
   }
+
+  const now = new Date();
+  await prisma.qrChallenge.updateMany({
+    where: { stationId, revokedAt: null, expiresAt: { gt: now } },
+    data: { revokedAt: now },
+  });
 
   const plainToken = generatePlainToken();
   const tokenHash = sha256(plainToken);
@@ -36,6 +50,7 @@ export async function createAttendanceQrChallenge(
       createdByUserId,
     },
   });
+  await prisma.auditLog.create({ data: { actorUserId: createdByUserId || null, action: "STATION_QR_CREATED", entityType: "QrChallenge", entityId: challenge.id, metadata: { stationId, expiresAt: expiresAt.toISOString() } } });
 
   return {
     id: challenge.id,
@@ -43,9 +58,11 @@ export async function createAttendanceQrChallenge(
     expiresAt: challenge.expiresAt,
     stationId: challenge.stationId,
   };
+  });
 }
 
 export async function scanAttendanceQr(data: {
+  actorRole?: string;
   userId: string;
   qrToken: string;
   latitude: number;
@@ -54,6 +71,7 @@ export async function scanAttendanceQr(data: {
   deviceFingerprint: string;
   ip?: string;
 }) {
+  return serializable(async (prisma) => {
   const tokenHash = sha256(data.qrToken);
 
   const challenge = await prisma.qrChallenge.findFirst({
@@ -94,6 +112,8 @@ export async function scanAttendanceQr(data: {
     throw new Error("Estás fuera del rango permitido del cuartel");
   }
 
+  const actor = await prisma.user.findUnique({ where: { id: data.userId }, include: { profile: true } });
+  if (!actor || normalizeRank(actor.profile?.rank) === "administrador") throw new OperationError(403, "La cuenta administradora no registra asistencia personal");
   const openAttendance = await prisma.attendance.findFirst({
     where: {
       userId: data.userId,
@@ -111,6 +131,7 @@ export async function scanAttendanceQr(data: {
   let attendance;
 
   if (!openAttendance) {
+    if (data.actorRole === "GUARD" || effectiveAccessRole(actor.role, actor.profile?.rank) === "GUARD") throw new OperationError(403, "Guardia puede cerrar permanencias, pero no registrar ingresos");
     action = "CHECK_IN";
 
     attendance = await prisma.attendance.create({
@@ -129,6 +150,9 @@ export async function scanAttendanceQr(data: {
         checkInQrId: challenge.id,
       },
     });
+    // T09: una ubicacion con senales de falsificacion se marca y audita, sin bloquear el ingreso.
+    const lastFix = await prisma.attendance.findFirst({ where: { userId: data.userId, id: { not: attendance.id } }, orderBy: { createdAt: "desc" }, select: { checkInLatitude: true, checkInLongitude: true } });
+    await recordGpsSuspicion(prisma, data.userId, attendance.id, "Ingreso por QR", gpsSuspicionReasons(data, lastFix ? { latitude: lastFix.checkInLatitude, longitude: lastFix.checkInLongitude } : null));
 
     await prisma.attendanceRecord.create({
       data: {
@@ -193,8 +217,22 @@ export async function scanAttendanceQr(data: {
     },
   });
 
+  const shouldPromptAvailability = action === "CHECK_IN" && (
+    !actor.emergencyStatusConfirmedAt ||
+    Boolean(await prisma.emergencyAvailability.findFirst({
+      where: {
+        userId: data.userId,
+        cancelledAt: null,
+        startsAt: { lte: new Date() },
+        OR: [{ endsAt: null }, { endsAt: { gt: new Date() } }],
+      },
+      select: { id: true },
+    }))
+  );
+
   return {
     action,
+    shouldPromptAvailability,
     station: {
       id: station.id,
       name: station.name,
@@ -203,6 +241,7 @@ export async function scanAttendanceQr(data: {
     workedMinutes: attendance.workedMinutes ?? 0,
     distanceMeters: Math.round(distance),
   };
+  });
 }
 export async function getMyOpenAttendance(userId: string) {
   return prisma.attendance.findFirst({
@@ -227,6 +266,7 @@ export async function getPresentPersonnel() {
         not: null,
       },
       user: {
+        missionCrew: { none: { movement: { returnedAt: null } } },
         deletedAt: null,
         isActive: true,
         isPendingApproval: false,
@@ -277,52 +317,27 @@ export async function getMyAttendances(userId: string) {
 }
 
 export async function getMyAttendanceSummary(userId: string) {
-  const attendances = await prisma.attendance.findMany({
-    where: {
-      userId,
-      status: "CLOSED",
-      workedMinutes: {
-        not: null,
-      },
-    },
-    select: {
-      workedMinutes: true,
-      checkInAt: true,
-    },
-  });
-
-  const totalMinutes = attendances.reduce(
-    (acc, item) => acc + (item.workedMinutes ?? 0),
-    0,
-  );
-
-  const now = new Date();
-  const currentMonthMinutes = attendances
-    .filter((item) => {
-      if (!item.checkInAt) return false;
-      const date = new Date(item.checkInAt);
-      return (
-        date.getMonth() === now.getMonth() &&
-        date.getFullYear() === now.getFullYear()
-      );
-    })
-    .reduce((acc, item) => acc + (item.workedMinutes ?? 0), 0);
-
-  const openAttendance = await prisma.attendance.findFirst({
-    where: {
-      userId,
-      status: "OPEN",
-    },
-    select: {
-      id: true,
-    },
-  });
+  const [attendances, participations, departures, openAttendance] = await prisma.$transaction([
+    prisma.attendance.findMany({ where: { userId, status: "CLOSED", checkInTrust: { not: "REJECTED" }, discardedAt: null, checkOutTrust: { not: "REJECTED" } }, select: { checkInAt: true, checkOutAt: true } }),
+    prisma.serviceParticipation.findMany({ where: creditedServices(userId), select: { startedAt: true, endedAt: true } }),
+    prisma.departureMember.findMany({ where: { userId, departure: { voidedAt: null } }, select: { departure: { select: { departedAt: true, returnedAt: true } } } }),
+    prisma.attendance.findFirst({ where: { userId, status: "OPEN" }, select: { id: true } }),
+  ], { isolationLevel: "RepeatableRead" });
+  const station = attendances.filter((a) => a.checkInAt && a.checkOutAt && a.checkOutAt > a.checkInAt).map((a) => ({ start: a.checkInAt!.getTime(), end: a.checkOutAt!.getTime() }));
+  const services = [...participations.map((p) => ({ start: p.startedAt.getTime(), end: p.endedAt.getTime() })), ...departures.map(({ departure: d }) => ({ start: d.departedAt.getTime(), end: d.returnedAt.getTime() }))];
+  const bounds = reportBounds(stationDate().slice(0, 7));
+  const monthMinutes = (rows: Array<{ start: number; end: number }>) => Math.floor(unionMilliseconds(rows.map((r) => ({ start: Math.max(r.start, bounds.start.getTime()), end: Math.min(r.end, bounds.end.getTime()) })).filter((r) => r.end > r.start)) / 60000);
+  const totalMinutes = Math.floor(unionMilliseconds(station) / 60000), currentMonthMinutes = monthMinutes(station);
+  const creditedTotalMinutes = Math.floor(unionMilliseconds([...station, ...services]) / 60000), creditedMonthMinutes = monthMinutes([...station, ...services]);
 
   return {
     totalMinutes,
     totalHours: Math.floor(totalMinutes / 60),
     totalHoursFormatted: formatMinutes(totalMinutes),
-    totalAttendances: attendances.length,
+    totalAttendances: station.length,
+    creditedTotalMinutes,
+    creditedMonthMinutes,
+    creditedMonthFormatted: formatMinutes(creditedMonthMinutes),
     currentMonthMinutes,
     currentMonthFormatted: formatMinutes(currentMonthMinutes),
     isCurrentlyInside: Boolean(openAttendance),

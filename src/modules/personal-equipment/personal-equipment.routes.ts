@@ -1,0 +1,18 @@
+import { Router } from "express";
+import { authenticate } from "../../middlewares/auth.middleware";
+import { authorizeOrPermission } from "../../utils/special-permissions";
+import { equipmentListSchema, equipmentHistorySchema, createPersonalEquipmentSchema, updatePersonalEquipmentSchema, checkEquipmentSchema, issueEquipmentSchema, returnEquipmentSchema, equipmentRevisionSchema } from "./personal-equipment.schemas";
+import { listPersonalEquipment, equipmentHistory, createPersonalEquipment, updatePersonalEquipment, checkPersonalEquipment, issuePersonalEquipment, returnPersonalEquipment, archivePersonalEquipment } from "./personal-equipment.service";
+const router = Router();
+router.use(authenticate);
+router.use(authorizeOrPermission("PPE", "ADMIN", "OPERATOR"));
+router.get("/", async (req, res) => { res.json(await listPersonalEquipment(equipmentListSchema.parse(req.query), req.user!)); });
+router.get("/:id/history", async (req, res) => { res.json(await equipmentHistory(String(req.params.id), equipmentHistorySchema.parse(req.query).page, req.user!)); });
+router.use(authorizeOrPermission("PPE", "ADMIN"));
+router.post("/", async (req, res) => { res.status(201).json(await createPersonalEquipment(createPersonalEquipmentSchema.parse(req.body), req.user!.userId)); });
+router.put("/:id", async (req, res) => { res.json(await updatePersonalEquipment(String(req.params.id), updatePersonalEquipmentSchema.parse(req.body), req.user!.userId)); });
+router.post("/:id/checks", async (req, res) => { res.status(201).json(await checkPersonalEquipment(String(req.params.id), checkEquipmentSchema.parse(req.body), req.user!.userId)); });
+router.post("/:id/issues", async (req, res) => { res.status(201).json(await issuePersonalEquipment(String(req.params.id), issueEquipmentSchema.parse(req.body), req.user!.userId)); });
+router.post("/:id/return", async (req, res) => { res.json(await returnPersonalEquipment(String(req.params.id), returnEquipmentSchema.parse(req.body), req.user!.userId)); });
+router.post("/:id/archive", async (req, res) => { res.json(await archivePersonalEquipment(String(req.params.id), equipmentRevisionSchema.parse(req.body).revision, req.user!.userId)); });
+export default router;

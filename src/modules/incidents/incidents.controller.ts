@@ -1,17 +1,49 @@
 import { Request, Response } from "express";
 import {
   assignUsersSchema,
+  closeIncidentSchema,
   createIncidentSchema,
+  createIncidentUpdateSchema,
+  dispatchAlertSchema,
   updateIncidentSchema,
 } from "./incidents.schemas";
 import {
   assignUsersToIncident,
   closeIncident,
+  createIncidentUpdate,
+  deleteIncidentUpdate,
   createIncident,
+  dispatchIncidentFromAlert,
   getAllIncidents,
   getIncidentById,
+  IncidentConflictError,
   updateIncident,
 } from "./incidents.service";
+
+export async function dispatchIncidentFromAlertController(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const actorUserId = req.user?.userId;
+    if (!actorUserId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const parsed = dispatchAlertSchema.parse(req.body);
+    const incident = await dispatchIncidentFromAlert({
+      alertId: String(req.params.alertId),
+      ...parsed,
+      createdByUserId: actorUserId,
+    });
+
+    return res.status(201).json(incident);
+  } catch (error: any) {
+    return res.status(error instanceof IncidentConflictError ? 409 : 400).json({
+      message: error.message || "No se pudo despachar el operativo",
+    });
+  }
+}
 
 export async function createIncidentController(req: Request, res: Response) {
   try {
@@ -32,7 +64,7 @@ export async function createIncidentController(req: Request, res: Response) {
 
     return res.status(201).json(incident);
   } catch (error: any) {
-    return res.status(400).json({
+    return res.status(error instanceof IncidentConflictError ? 409 : 400).json({
       message: error.message || "Failed to create incident",
     });
   }
@@ -90,11 +122,12 @@ export async function closeIncidentController(req: Request, res: Response) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const updated = await closeIncident(incidentId, actorUserId);
+    const parsed = closeIncidentSchema.parse(req.body);
+    const updated = await closeIncident(incidentId, actorUserId, parsed, req.user?.role);
 
     return res.status(200).json(updated);
   } catch (error: any) {
-    return res.status(400).json({
+    return res.status(error.status || 400).json({
       message: error.message || "Failed to close incident",
     });
   }
@@ -116,5 +149,34 @@ export async function assignUsersToIncidentController(req: Request, res: Respons
     return res.status(400).json({
       message: error.message || "Failed to assign users to incident",
     });
+  }
+}
+
+export async function createIncidentUpdateController(req: Request, res: Response) {
+  try {
+    const actorUserId = req.user?.userId;
+    if (!actorUserId) return res.status(401).json({ message: "Unauthorized" });
+    const parsed = createIncidentUpdateSchema.parse(req.body);
+    return res.status(201).json(
+      await createIncidentUpdate(String(req.params.id), actorUserId, parsed.body),
+    );
+  } catch (error: any) {
+    return res.status(400).json({ message: error.message || "No se pudo guardar la novedad" });
+  }
+}
+
+export async function deleteIncidentUpdateController(req: Request, res: Response) {
+  try {
+    const actorUserId = req.user?.userId;
+    if (!actorUserId) return res.status(401).json({ message: "Unauthorized" });
+    return res.status(200).json(
+      await deleteIncidentUpdate(
+        String(req.params.id),
+        String(req.params.updateId),
+        actorUserId,
+      ),
+    );
+  } catch (error: any) {
+    return res.status(400).json({ message: error.message || "No se pudo eliminar la novedad" });
   }
 }

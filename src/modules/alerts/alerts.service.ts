@@ -1,4 +1,9 @@
 import { prisma } from "../../config/prisma";
+import { serializable } from "../../utils/transaction";
+import { OperationError } from "../operations/operations.schemas";
+import { PUBLIC_USER_SELECT } from "../../utils/public-user";
+import { isAlertRecipient, notifyAlert } from "./alert-notifications";
+import { notifyCommand } from "../members/notifications.service";
 
 function normalizeNullable(value?: string | null) {
   if (value === undefined || value === null || value === "") return null;
@@ -13,7 +18,8 @@ export async function createAlert(data: {
   contactPhone?: string | null;
   createdByUserId: string;
 }) {
-  const alert = await prisma.alert.create({
+  return serializable(async tx => {
+  const alert = await tx.alert.create({
     data: {
       type: data.type,
       priority: data.priority,
@@ -25,28 +31,29 @@ export async function createAlert(data: {
     },
     include: {
       createdBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       resolvedBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       responses: {
         include: {
           user: {
-            include: {
-              profile: true,
-            },
+            select: PUBLIC_USER_SELECT,
           },
+        },
+      },
+      incident: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
         },
       },
     },
   });
 
-  await prisma.auditLog.create({
+  await tx.auditLog.create({
     data: {
       actorUserId: data.createdByUserId,
       action: "ALERT_CREATED",
@@ -60,7 +67,9 @@ export async function createAlert(data: {
     },
   });
 
+  await notifyAlert(tx, alert);
   return alert;
+  });
 }
 
 export async function getAllAlerts(status?: string, type?: string) {
@@ -82,22 +91,23 @@ export async function getAllAlerts(status?: string, type?: string) {
     },
     include: {
       createdBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       resolvedBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       responses: {
         include: {
           user: {
-            include: {
-              profile: true,
-            },
+            select: PUBLIC_USER_SELECT,
           },
+        },
+      },
+      incident: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
         },
       },
     },
@@ -112,21 +122,15 @@ export async function getAlertById(alertId: string) {
     where: { id: alertId },
     include: {
       createdBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       resolvedBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       responses: {
         include: {
           user: {
-            include: {
-              profile: true,
-            },
+            select: PUBLIC_USER_SELECT,
           },
         },
       },
@@ -143,6 +147,11 @@ export async function getAlertById(alertId: string) {
 export async function resolveAlert(alertId: string, actorUserId: string) {
   const alert = await prisma.alert.findUnique({
     where: { id: alertId },
+    include: {
+      incident: {
+        select: { id: true, status: true },
+      },
+    },
   });
 
   if (!alert) {
@@ -151,6 +160,12 @@ export async function resolveAlert(alertId: string, actorUserId: string) {
 
   if (alert.status !== "ACTIVE") {
     throw new Error("Only active alerts can be resolved");
+  }
+
+  if (alert.incident?.status === "OPEN") {
+    throw new Error(
+      "La alerta tiene un incidente abierto; cerra el incidente para resolverla",
+    );
   }
 
   const updated = await prisma.alert.update({
@@ -162,21 +177,15 @@ export async function resolveAlert(alertId: string, actorUserId: string) {
     },
     include: {
       createdBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       resolvedBy: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
       responses: {
         include: {
           user: {
-            include: {
-              profile: true,
-            },
+            select: PUBLIC_USER_SELECT,
           },
         },
       },
@@ -199,75 +208,70 @@ export async function resolveAlert(alertId: string, actorUserId: string) {
   return updated;
 }
 
-export async function respondToAlert(
-  alertId: string,
-  userId: string,
-  response: "GOING" | "NOT_GOING",
-) {
-  const alert = await prisma.alert.findUnique({
-    where: { id: alertId },
-  });
-
-  if (!alert) {
-    throw new Error("Alert not found");
-  }
-
-  if (alert.status !== "ACTIVE") {
-    throw new Error("Cannot respond to a non-active alert");
-  }
-
-  const user = await prisma.user.findFirst({
-    where: {
-      id: userId,
-      deletedAt: null,
-      isActive: true,
-      isPendingApproval: false,
-    },
-  });
-
-  if (!user) {
-    throw new Error("User not found or inactive");
-  }
-
-  const alertResponse = await prisma.alertResponse.upsert({
-    where: {
-      alertId_userId: {
-        alertId,
-        userId,
+export async function cancelAlert(alertId: string, actorUserId: string, reason: string) {
+  return serializable(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Alert" WHERE "id" = ${alertId} FOR UPDATE`;
+    const alert = await tx.alert.findUnique({
+      where: { id: alertId },
+      include: { incident: { select: { id: true } } },
+    });
+    if (!alert) throw new OperationError(404, "Alerta no encontrada");
+    if (alert.status !== "ACTIVE") throw new OperationError(409, "La alerta ya no está activa");
+    const updated = await tx.alert.update({
+      where: { id: alertId },
+      data: { status: "CANCELLED", resolvedByUserId: actorUserId, resolvedAt: new Date() },
+      include: {
+        createdBy: { select: PUBLIC_USER_SELECT },
+        resolvedBy: { select: PUBLIC_USER_SELECT },
+        responses: { include: { user: { select: PUBLIC_USER_SELECT } } },
+        incident: { select: { id: true, title: true, status: true } },
       },
-    },
-    update: {
-      response,
-      respondedAt: new Date(),
-    },
-    create: {
-      alertId,
-      userId,
-      response,
-    },
-    include: {
-      user: {
-        include: {
-          profile: true,
+    });
+    await tx.auditLog.create({
+      data: {
+        actorUserId,
+        action: "ALERT_CANCELLED",
+        entityType: "Alert",
+        entityId: alertId,
+        metadata: { reason, incidentId: alert.incident?.id ?? null },
+      },
+    });
+    await notifyCommand(tx, "Alerta cancelada", "/alerts", `${alert.location}: ${reason}`, actorUserId);
+    return updated;
+  });
+}
+
+export async function respondToAlert(alertId: string, userId: string, response: "GOING" | "NOT_GOING") {
+  return serializable(async (tx) => {
+    await tx.$queryRaw`SELECT "id" FROM "Alert" WHERE "id" = ${alertId} FOR UPDATE`;
+    const alert = await tx.alert.findUnique({ where: { id: alertId } });
+    if (!alert) throw new OperationError(404, "Alerta no encontrada");
+    if (alert.status !== "ACTIVE") throw new OperationError(409, "La alerta ya no acepta respuestas");
+    if (!await tx.user.findFirst({ where: { id: userId, deletedAt: null, isActive: true, isPendingApproval: false }, select: { id: true } })) throw new OperationError(403, "Personal no habilitado");
+    if (!await isAlertRecipient(tx, alertId, userId)) throw new OperationError(403, "No integra la convocatoria de esta alerta: puede consultarla, pero no responder. Active su disponibilidad para recibirla");
+    const previous = await tx.alertResponse.findUnique({ where: { alertId_userId: { alertId, userId } }, include: { user: { select: PUBLIC_USER_SELECT }, alert: true } });
+    if (previous) {
+      if (previous.response === response) return previous;
+      const updated = await tx.alertResponse.update({
+        where: { id: previous.id },
+        data: { response, respondedAt: new Date() },
+        include: { user: { select: PUBLIC_USER_SELECT }, alert: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: userId,
+          action: "ALERT_RESPONSE_CHANGED",
+          entityType: "Alert",
+          entityId: alertId,
+          metadata: { previousResponse: previous.response, response },
         },
-      },
-      alert: true,
-    },
+      });
+      return updated;
+    }
+    const result = await tx.alertResponse.create({ data: { alertId, userId, response }, include: { user: { select: PUBLIC_USER_SELECT }, alert: true } });
+    await tx.auditLog.create({ data: { actorUserId: userId, action: "ALERT_RESPONDED", entityType: "Alert", entityId: alertId, metadata: { response } } });
+    return result;
   });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: userId,
-      action: "ALERT_RESPONDED",
-      entityType: "Alert",
-      entityId: alertId,
-      metadata: {
-        response,
-      },
-    },
-  });
-
-  return alertResponse;
 }
 
 export async function getAlertResponses(alertId: string) {
@@ -283,9 +287,7 @@ export async function getAlertResponses(alertId: string) {
     where: { alertId },
     include: {
       user: {
-        include: {
-          profile: true,
-        },
+        select: PUBLIC_USER_SELECT,
       },
     },
     orderBy: {

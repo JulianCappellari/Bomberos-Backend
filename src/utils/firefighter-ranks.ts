@@ -3,6 +3,11 @@ export const FIREFIGHTER_RANKS = [
   "Sub oficial",
   "Bombero",
   "Aspirante",
+  "Comision directiva",
+  "Aspirante mayor",
+  "Aspirante menor",
+  "Administrador",
+  "Guardia",
 ] as const;
 
 export type FirefighterRank = (typeof FIREFIGHTER_RANKS)[number];
@@ -24,5 +29,15 @@ export function isAllowedFirefighterRank(value?: string | null) {
 
 export function isCommandRank(value?: string | null) {
   const normalized = normalizeRank(value).replace(/\s/g, "");
-  return normalized === "oficial" || normalized === "suboficial";
+  return normalized === "oficial" || normalized === "suboficial" || normalized === "administrador";
+}
+
+export function effectiveAccessRole(role: string, rank?: string | null) {
+  if (role === "ADMIN" || normalizeRank(rank) === "oficial" || normalizeRank(rank) === "administrador") return "ADMIN";
+  if (normalizeRank(rank).replace(/\s/g, "") === "suboficial") return "OPERATOR";
+  if (normalizeRank(rank) === "guardia") return "GUARD";
+  return role;
+}
+export function guardFunctionAllowed(enabled: boolean, rank?: string | null) {
+  return enabled && ["bombero","oficial","suboficial"].includes(normalizeRank(rank).replace(/\s/g,""));
 }

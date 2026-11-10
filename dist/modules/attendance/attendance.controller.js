@@ -33,6 +33,7 @@ async function scanAttendanceQrController(req, res) {
             "";
         const result = await (0, attendance_service_1.scanAttendanceQr)({
             userId,
+            actorRole: req.user.role,
             qrToken: parsed.qrToken,
             latitude: parsed.latitude,
             longitude: parsed.longitude,
@@ -43,7 +44,7 @@ async function scanAttendanceQrController(req, res) {
         return res.status(200).json(result);
     }
     catch (error) {
-        return res.status(400).json({
+        return res.status(error.status || 400).json({
             message: error.message || "No se pudo registrar la asistencia",
         });
     }

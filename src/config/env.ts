@@ -13,3 +13,6 @@ export const env = {
 if (!env.jwtAccessSecret || !env.jwtRefreshSecret) {
   throw new Error("Missing JWT environment variables");
 }
+if (process.env.NODE_ENV === "production" && (env.jwtAccessSecret.length < 32 || env.jwtRefreshSecret.length < 32 || env.jwtAccessSecret === env.jwtRefreshSecret)) {
+  throw new Error("Production requires distinct JWT secrets of at least 32 characters");
+}

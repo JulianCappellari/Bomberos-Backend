@@ -1,32 +1,13 @@
 import { z } from "zod";
 
-const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, {
-  message: "El horario debe tener formato HH:mm",
-});
-
-function timeToMinutes(value: string) {
-  const [hours, minutes] = value.split(":").map(Number);
-  return hours * 60 + minutes;
-}
-
 export const createShiftSchema = z
   .object({
     date: z.string().date(),
-    startTime: timeSchema,
-    endTime: timeSchema,
-    shiftType: z.string().trim().min(2).max(60),
-    notes: z.string().trim().optional().or(z.literal("")),
-    assignedUserIds: z.array(z.string().min(1)).optional(),
+    period: z.enum(["DAY", "NIGHT"]),
+    notes: z.string().trim().max(4000).optional().or(z.literal("")),
+    assignedUserIds: z.array(z.string().min(1)).min(1, "Seleccione al menos una persona"),
   })
   .superRefine((value, ctx) => {
-    if (timeToMinutes(value.endTime) <= timeToMinutes(value.startTime)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["endTime"],
-        message: "La hora de fin debe ser posterior a la hora de inicio",
-      });
-    }
-
     if (value.assignedUserIds) {
       const uniqueIds = new Set(value.assignedUserIds);
       if (uniqueIds.size !== value.assignedUserIds.length) {
@@ -39,10 +20,15 @@ export const createShiftSchema = z
     }
   });
 
+export const updateShiftSchema = createShiftSchema;
+
 export const listShiftsQuerySchema = z.object({
   date: z.string().date().optional(),
   from: z.string().date().optional(),
   to: z.string().date().optional(),
+}).refine((value) => !value.from || !value.to || value.from <= value.to, {
+  path: ["to"],
+  message: "La fecha final debe ser igual o posterior a la inicial",
 });
 
 export const assignUsersToShiftSchema = z.object({

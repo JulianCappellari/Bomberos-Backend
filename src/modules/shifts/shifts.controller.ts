@@ -3,6 +3,7 @@ import {
   assignUsersToShiftSchema,
   createShiftSchema,
   listShiftsQuerySchema,
+  updateShiftSchema,
 } from "./shifts.schemas";
 import {
   assignUsersToShift,
@@ -10,6 +11,7 @@ import {
   deleteShift,
   getAllShifts,
   getShiftById,
+  updateShift,
 } from "./shifts.service";
 
 export async function createShiftController(req: Request, res: Response) {
@@ -30,9 +32,25 @@ export async function createShiftController(req: Request, res: Response) {
 
     return res.status(201).json(shift);
   } catch (error: any) {
-    return res.status(400).json({
+    return res.status(error.status || 400).json({
       message: error.message || "Failed to create shift",
     });
+  }
+}
+
+export async function updateShiftController(req: Request, res: Response) {
+  try {
+    const actorUserId = req.user?.userId;
+    if (!actorUserId) return res.status(401).json({ message: "Unauthorized" });
+    const parsed = updateShiftSchema.parse(req.body);
+    const shift = await updateShift(
+      String(req.params.id),
+      { ...parsed, notes: parsed.notes || null },
+      actorUserId,
+    );
+    return res.status(200).json(shift);
+  } catch (error: any) {
+    return res.status(error.status || 400).json({ message: error.message || "No se pudo actualizar la guardia" });
   }
 }
 
@@ -44,7 +62,7 @@ export async function getAllShiftsController(req: Request, res: Response) {
 
     return res.status(200).json(shifts);
   } catch (error: any) {
-    return res.status(500).json({
+    return res.status(error.status || 400).json({
       message: error.message || "Failed to fetch shifts",
     });
   }
@@ -76,7 +94,7 @@ export async function assignUsersToShiftController(req: Request, res: Response) 
 
     return res.status(200).json(shift);
   } catch (error: any) {
-    return res.status(400).json({
+    return res.status(error.status || 400).json({
       message: error.message || "Failed to assign users to shift",
     });
   }
@@ -90,7 +108,7 @@ export async function deleteShiftController(req: Request, res: Response) {
 
     return res.status(200).json(result);
   } catch (error: any) {
-    return res.status(400).json({
+    return res.status(error.status || 400).json({
       message: error.message || "Failed to delete shift",
     });
   }

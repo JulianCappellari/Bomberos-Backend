@@ -1,0 +1,20 @@
+import { Router } from "express";
+import { authenticate } from "../../middlewares/auth.middleware";
+import { rateLimit } from "../../middlewares/rate-limit.middleware";
+import { subscriptionSchema } from "./push.schemas";
+import { pushStatus, subscribePush, unsubscribePush } from "./push.service";
+import { prisma } from "../../config/prisma";
+import { OperationError } from "../operations/operations.schemas";
+const router = Router();
+router.use(authenticate);
+router.get("/", async (req, res) => { res.json(await pushStatus(req.user!)); });
+router.use(rateLimit({ windowMs: 60000, maxRequests: 10, message: "Espere un minuto antes de modificar las notificaciones" }));
+router.post("/subscriptions", async (req, res) => { res.status(201).json(await subscribePush(subscriptionSchema.parse(req.body), req.user!)); });
+router.delete("/subscriptions/:id", async (req, res) => { res.json(await unsubscribePush(String(req.params.id), req.user!)); });
+router.post("/test", async (req, res) => {
+  const found = await prisma.pushSubscription.findFirst({ where: { userId: req.user!.userId, sessionId: req.user!.sessionId || "" } });
+  if (!found) throw new OperationError(409, "Active las notificaciones en este dispositivo primero");
+  await prisma.memberNotification.create({ data: { userId: req.user!.userId, title: "Prueba de notificaciones", href: "/notifications" } });
+  res.status(202).json({ message: "Prueba en cola. La recepcion debe comprobarse en el dispositivo" });
+});
+export default router;

@@ -3,14 +3,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.createCompartmentController = createCompartmentController;
 exports.createInventoryItemController = createInventoryItemController;
 exports.getVehicleInventoryController = getVehicleInventoryController;
-exports.createInspectionController = createInspectionController;
-exports.getInspectionByIdController = getInspectionByIdController;
-exports.getVehicleInspectionsController = getVehicleInspectionsController;
 exports.updateInventoryItemController = updateInventoryItemController;
 exports.deleteInventoryItemController = deleteInventoryItemController;
 const equipment_schemas_1 = require("./equipment.schemas");
 const equipment_service_1 = require("./equipment.service");
-async function createCompartmentController(req, res) {
+async function createCompartmentController(req, res, next) {
     try {
         const vehicleId = String(req.params.vehicleId);
         const parsed = equipment_schemas_1.createCompartmentSchema.parse(req.body);
@@ -18,12 +15,12 @@ async function createCompartmentController(req, res) {
         return res.status(201).json(result);
     }
     catch (error) {
-        return res.status(400).json({
+        return res.status(error.status || 400).json({
             message: error.message || "No se pudo crear el compartimento",
         });
     }
 }
-async function createInventoryItemController(req, res) {
+async function createInventoryItemController(req, res, next) {
     try {
         const compartmentId = String(req.params.compartmentId);
         const parsed = equipment_schemas_1.createInventoryItemSchema.parse(req.body);
@@ -31,12 +28,12 @@ async function createInventoryItemController(req, res) {
         return res.status(201).json(result);
     }
     catch (error) {
-        return res.status(400).json({
+        return res.status(error.status || 400).json({
             message: error.message || "No se pudo crear la herramienta",
         });
     }
 }
-async function getVehicleInventoryController(req, res) {
+async function getVehicleInventoryController(req, res, next) {
     try {
         const vehicleId = String(req.params.vehicleId);
         const result = await (0, equipment_service_1.getVehicleInventory)(vehicleId);
@@ -48,46 +45,7 @@ async function getVehicleInventoryController(req, res) {
         });
     }
 }
-async function createInspectionController(req, res) {
-    try {
-        const parsed = equipment_schemas_1.createInspectionSchema.parse(req.body);
-        const result = await (0, equipment_service_1.createInspection)({
-            ...parsed,
-            actorUserId: req.user?.userId,
-        });
-        return res.status(201).json(result);
-    }
-    catch (error) {
-        return res.status(400).json({
-            message: error.message || "No se pudo crear la inspección",
-        });
-    }
-}
-async function getInspectionByIdController(req, res) {
-    try {
-        const inspectionId = String(req.params.id);
-        const result = await (0, equipment_service_1.getInspectionById)(inspectionId);
-        return res.status(200).json(result);
-    }
-    catch (error) {
-        return res.status(404).json({
-            message: error.message || "No se pudo obtener la inspección",
-        });
-    }
-}
-async function getVehicleInspectionsController(req, res) {
-    try {
-        const vehicleId = String(req.params.vehicleId);
-        const result = await (0, equipment_service_1.getVehicleInspections)(vehicleId);
-        return res.status(200).json(result);
-    }
-    catch (error) {
-        return res.status(404).json({
-            message: error.message || "No se pudo obtener el historial de inspecciones",
-        });
-    }
-}
-async function updateInventoryItemController(req, res) {
+async function updateInventoryItemController(req, res, next) {
     try {
         const itemId = String(req.params.itemId);
         const parsed = equipment_schemas_1.updateInventoryItemSchema.parse(req.body);
@@ -95,19 +53,19 @@ async function updateInventoryItemController(req, res) {
         return res.status(200).json(result);
     }
     catch (error) {
-        return res.status(400).json({
+        return res.status(error.status || 400).json({
             message: error.message || "No se pudo actualizar la herramienta",
         });
     }
 }
-async function deleteInventoryItemController(req, res) {
+async function deleteInventoryItemController(req, res, next) {
     try {
         const itemId = String(req.params.itemId);
-        const result = await (0, equipment_service_1.deleteInventoryItem)(itemId, req.user?.userId);
+        const result = await (0, equipment_service_1.deleteInventoryItem)(itemId, req.user?.userId, equipment_schemas_1.compartmentDeleteSchema.parse(req.body).revision);
         return res.status(200).json(result);
     }
     catch (error) {
-        return res.status(400).json({
+        return res.status(error.status || 400).json({
             message: error.message || "No se pudo eliminar la herramienta",
         });
     }

@@ -62,7 +62,7 @@ async function updateUserController(req, res) {
         return res.status(200).json(user);
     }
     catch (error) {
-        return res.status(400).json({
+        return res.status(error.status || 400).json({
             message: error.message || "Failed to update user",
         });
     }

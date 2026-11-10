@@ -1,0 +1,16 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const rate_limit_middleware_1 = require("../../middlewares/rate-limit.middleware");
+const personal_equipment_schemas_1 = require("./personal-equipment.schemas");
+const equipment_requests_schemas_1 = require("./equipment-requests.schemas");
+const equipment_requests_service_1 = require("./equipment-requests.service");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.authenticate);
+router.get("/", async (req, res) => { res.json(await (0, equipment_requests_service_1.listEquipmentRequests)(equipment_requests_schemas_1.equipmentRequestListSchema.parse(req.query), req.user)); });
+router.post("/", (0, rate_limit_middleware_1.rateLimit)({ windowMs: 60000, maxRequests: 20 }), async (req, res) => { res.status(201).json(await (0, equipment_requests_service_1.createEquipmentRequest)(equipment_requests_schemas_1.createEquipmentRequestSchema.parse(req.body), req.user.userId)); });
+router.put("/:id", async (req, res) => { res.json(await (0, equipment_requests_service_1.editEquipmentRequest)(String(req.params.id), equipment_requests_schemas_1.editEquipmentRequestSchema.parse(req.body), req.user)); });
+router.post("/:id/review", async (req, res) => { res.json(await (0, equipment_requests_service_1.reviewEquipmentRequest)(String(req.params.id), equipment_requests_schemas_1.reviewEquipmentRequestSchema.parse(req.body), req.user)); });
+router.post("/:id/cancel", async (req, res) => { res.json(await (0, equipment_requests_service_1.cancelEquipmentRequest)(String(req.params.id), personal_equipment_schemas_1.equipmentRevisionSchema.parse(req.body).revision, req.user)); });
+exports.default = router;

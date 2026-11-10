@@ -1,5 +1,20 @@
 import bcrypt from "bcrypt";
+import { Prisma } from "@prisma/client";
+import { effectiveAccessRole } from "../../utils/firefighter-ranks";
 import { prisma } from "../../config/prisma";
+import { disconnectUser } from "../../config/socket";
+import { serializable } from "../../utils/transaction";
+import { OperationError } from "../operations/operations.schemas";
+import { closeUserPermanences } from "./account-administration.service";
+import { permissionAllowedForRank, SpecialPermission } from "../../utils/special-permissions";
+function countAdministrators(tx: Prisma.TransactionClient) {
+  return tx.user.count({ where: { isActive: true, isPendingApproval: false, deletedAt: null, OR: [{ role: "ADMIN" }, { profile: { rank: { equals: "Oficial", mode: "insensitive" } } }, { profile: { rank: { equals: "Administrador", mode: "insensitive" } } }] } });
+}
+
+function withoutPassword<T extends { passwordHash: string }>(user: T) {
+  const { passwordHash: _passwordHash, ...safe } = user;
+  return safe;
+}
 
 function normalizeNullable(value?: string | null) {
   if (value === undefined || value === null || value === "") return null;
@@ -32,6 +47,7 @@ export async function getAllUsers() {
       attendances: {
         where: {
           status: "CLOSED",
+          discardedAt: null,
           workedMinutes: {
             not: null,
           },
@@ -54,7 +70,7 @@ export async function getAllUsers() {
     const { attendances, ...userWithoutAttendances } = user;
 
     return {
-      ...userWithoutAttendances,
+      ...withoutPassword(userWithoutAttendances),
       totalAttendanceMinutes,
       totalAttendanceFormatted: formatWorkedTimeHM(totalAttendanceMinutes),
     };
@@ -99,6 +115,7 @@ export async function getUserById(userId: string) {
       attendances: {
         where: {
           status: "CLOSED",
+          discardedAt: null,
           workedMinutes: {
             not: null,
           },
@@ -121,13 +138,14 @@ export async function getUserById(userId: string) {
   const { attendances, ...userWithoutAttendances } = user;
 
   return {
-    ...userWithoutAttendances,
+    ...withoutPassword(userWithoutAttendances),
     totalAttendanceMinutes,
     totalAttendanceFormatted: formatWorkedTimeHM(totalAttendanceMinutes),
   };
 }
 
 export async function createUser(data: any, actorUserId?: string) {
+  return serializable(async (prisma) => {
   const existingUsername = await prisma.user.findUnique({
     where: { username: data.username },
   });
@@ -217,11 +235,13 @@ export async function createUser(data: any, actorUserId?: string) {
     },
   });
 
-  return user;
+  return withoutPassword(user);
+  });
 }
 
 export async function updateUser(userId: string, data: any, actorUserId?: string) {
-  const existingUser = await prisma.user.findFirst({
+  const updated = await serializable(async (tx) => {
+  const existingUser = await tx.user.findFirst({
     where: {
       id: userId,
       deletedAt: null,
@@ -235,9 +255,17 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
   if (!existingUser) {
     throw new Error("User not found");
   }
+  const previousRole = effectiveAccessRole(existingUser.role, existingUser.profile?.rank);
+  if (data.revision && existingUser.updatedAt.toISOString() !== data.revision) throw new OperationError(409, "El perfil cambio; recargue antes de guardar");
+  const nextRole = effectiveAccessRole(data.role ?? existingUser.role, data.rank ?? existingUser.profile?.rank);
+  if (actorUserId === userId && (data.isActive === false || nextRole !== previousRole)) throw new Error("No puede desactivar su cuenta ni cambiar su propio rol");
+  if (previousRole === "ADMIN" && existingUser.isActive && (data.isActive === false || nextRole !== "ADMIN")) {
+    const admins = await countAdministrators(tx);
+    if (admins <= 1) throw new Error("Debe conservar al menos un administrador activo");
+  }
 
   if (data.email && data.email !== existingUser.email) {
-    const emailInUse = await prisma.user.findUnique({
+    const emailInUse = await tx.user.findUnique({
       where: { email: data.email },
     });
 
@@ -247,7 +275,7 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
   }
 
   if (data.dni && data.dni !== existingUser.profile?.dni) {
-    const dniInUse = await prisma.firefighterProfile.findUnique({
+    const dniInUse = await tx.firefighterProfile.findUnique({
       where: { dni: data.dni },
     });
 
@@ -257,7 +285,7 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
   }
 
   if (data.badge && data.badge !== existingUser.profile?.badge) {
-    const badgeInUse = await prisma.firefighterProfile.findUnique({
+    const badgeInUse = await tx.firefighterProfile.findUnique({
       where: { badge: data.badge },
     });
 
@@ -266,12 +294,16 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
     }
   }
 
-  const updatedUser = await prisma.user.update({
+  const updatedUser = await tx.user.update({
     where: { id: userId },
     data: {
+      updatedAt: new Date(Math.max(Date.now(), existingUser.updatedAt.getTime() + 1)),
       email: data.email !== undefined ? normalizeNullable(data.email) : undefined,
       role: data.role,
       isActive: data.isActive,
+      guardEligible: data.rank !== undefined && data.rank !== existingUser.profile?.rank ? false : undefined,
+      financeChief: data.rank !== undefined && data.rank !== existingUser.profile?.rank ? false : undefined,
+      specialPermissions: data.rank !== undefined && data.rank !== existingUser.profile?.rank ? existingUser.specialPermissions.filter((permission) => permissionAllowedForRank(permission as SpecialPermission, data.rank)) : undefined,
       profile: existingUser.profile
         ? {
             update: {
@@ -334,7 +366,7 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
     },
   });
 
-  await prisma.auditLog.create({
+  await tx.auditLog.create({
     data: {
       actorUserId: actorUserId || null,
       action: "USER_UPDATED",
@@ -342,26 +374,48 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
       entityId: updatedUser.id,
       metadata: {
         username: updatedUser.username,
+        previousRole,
+        nextRole,
+        previousRank: existingUser.profile?.rank || null,
+        nextRank: updatedUser.profile?.rank || null,
+        changes: Object.keys(data).filter((key) => key !== "revision").map((field) => ({ field, before: JSON.parse(JSON.stringify((existingUser as any)[field] ?? (existingUser.profile as any)?.[field] ?? null)), after: JSON.parse(JSON.stringify((updatedUser as any)[field] ?? (updatedUser.profile as any)?.[field] ?? null)) })),
       },
     },
   });
 
-  return updatedUser;
+  if (existingUser.guardEligible && !updatedUser.guardEligible) {
+    await tx.authSession.updateMany({where:{userId,guardMode:true},data:{guardMode:false}});
+    await tx.auditLog.create({data:{actorUserId:actorUserId||null,action:"GUARD_FUNCTION_REVOKED",entityType:"User",entityId:userId,metadata:{reason:"Cambio de cargo institucional"}}});
+  }
+  if (existingUser.specialPermissions.length !== updatedUser.specialPermissions.length) await tx.auditLog.create({data:{actorUserId:actorUserId||null,action:"SPECIAL_PERMISSION_REVOKED",entityType:"User",entityId:userId,metadata:{before:existingUser.specialPermissions,after:updatedUser.specialPermissions,reason:"Cambio de cargo institucional"}}});
+  if(existingUser.financeChief&&!updatedUser.financeChief)await tx.auditLog.create({data:{actorUserId:actorUserId||null,action:"FINANCE_CHIEF_CHANGED",entityType:"User",entityId:userId,metadata:{before:true,after:false,reason:"Cambio de cargo institucional"}}});
+  if (nextRole !== previousRole || data.role !== undefined && data.role !== existingUser.role || data.isActive === false) {
+    if (data.isActive === false) await closeUserPermanences(tx, userId, actorUserId || null, "Cuenta suspendida por administracion");
+    await tx.authSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
+  }
+  return withoutPassword(updatedUser);
+  });
+  disconnectUser(userId);
+  return updated;
 }
 
 export async function toggleUserActive(userId: string, actorUserId?: string) {
-  const user = await prisma.user.findFirst({
+  const updated = await serializable(async (tx) => {
+  const user = await tx.user.findFirst({
     where: {
       id: userId,
       deletedAt: null,
     },
+    include: { profile: true },
   });
 
   if (!user) {
     throw new Error("User not found");
   }
+  if (actorUserId === userId && user.isActive) throw new Error("No puede desactivar su propia cuenta");
+  if (effectiveAccessRole(user.role, user.profile?.rank) === "ADMIN" && user.isActive && await countAdministrators(tx) <= 1) throw new Error("Debe conservar al menos un administrador activo");
 
-  const updatedUser = await prisma.user.update({
+  const updatedUser = await tx.user.update({
     where: { id: userId },
     data: {
       isActive: !user.isActive,
@@ -372,7 +426,7 @@ export async function toggleUserActive(userId: string, actorUserId?: string) {
     },
   });
 
-  await prisma.auditLog.create({
+  await tx.auditLog.create({
     data: {
       actorUserId: actorUserId || null,
       action: updatedUser.isActive ? "USER_ACTIVATED" : "USER_DEACTIVATED",
@@ -385,5 +439,12 @@ export async function toggleUserActive(userId: string, actorUserId?: string) {
     },
   });
 
-  return updatedUser;
+  if (!updatedUser.isActive) {
+    await closeUserPermanences(tx, userId, actorUserId || null, "Cuenta suspendida por administracion");
+    await tx.authSession.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: new Date() } });
+  }
+  return withoutPassword(updatedUser);
+  });
+  if (!updated.isActive) disconnectUser(userId);
+  return updated;
 }

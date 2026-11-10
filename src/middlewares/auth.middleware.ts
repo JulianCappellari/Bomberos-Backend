@@ -1,6 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { verifyAccessToken } from "../utils/jwt";
-import { prisma } from "../config/prisma";
+import { authenticateAccessToken } from "../utils/auth-session";
 
 declare global {
   namespace Express {
@@ -8,6 +7,9 @@ declare global {
       user?: {
         userId: string;
         role: string;
+        rank?: string | null;
+        sessionId?: string;
+        permissions?: string[];
       };
     }
   }
@@ -26,28 +28,17 @@ export async function authenticate(
     }
 
     const token = authHeader.split(" ")[1];
-    const payload = verifyAccessToken(token);
-
-    const user = await prisma.user.findFirst({
-      where: {
-        id: payload.userId,
-        isActive: true,
-        isPendingApproval: false,
-        deletedAt: null,
-      },
-      select: {
-        id: true,
-        role: true,
-      },
-    });
-
-    if (!user) {
-      return res.status(401).json({ message: "User is not allowed to access" });
+    const user = await authenticateAccessToken(token);
+    if (user.mustChangePassword && !req.originalUrl.startsWith("/api/auth/")) {
+      return res.status(403).json({ code: "PASSWORD_CHANGE_REQUIRED", message: "Debe cambiar su contrasena inicial" });
     }
 
     req.user = {
-      userId: user.id,
+      userId: user.userId,
       role: user.role,
+      rank: user.rank,
+      sessionId: user.sessionId,
+      permissions: user.permissions,
     };
 
     next();

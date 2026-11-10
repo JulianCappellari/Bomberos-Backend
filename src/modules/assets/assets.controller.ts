@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { hasPermission } from "../../utils/special-permissions";
 import {
   createAssetSchema,
   updateAssetSchema,
@@ -65,7 +66,7 @@ export async function updateAssetController(req: Request, res: Response) {
     const assetId = String(req.params.id);
     const parsed = updateAssetSchema.parse(req.body);
 
-    const result = await updateAsset(assetId, parsed, req.user?.userId);
+    const result = await updateAsset(assetId, parsed, req.user?.userId, { fleetManager: hasPermission(req.user, "FLEET"), command: ["ADMIN", "OPERATOR"].includes(req.user?.role || "") });
 
     return res.status(200).json(result);
   } catch (error: any) {

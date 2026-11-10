@@ -8,12 +8,12 @@ const auth_service_1 = require("./auth.service");
 async function loginController(req, res) {
     try {
         const parsed = auth_schemas_1.loginSchema.parse(req.body);
-        const result = await (0, auth_service_1.loginUser)(parsed.username, parsed.password);
+        const result = await (0, auth_service_1.loginUser)(parsed.username, parsed.password, req.get("user-agent"));
         return res.status(200).json(result);
     }
     catch (error) {
         return res.status(401).json({
-            message: error.message || "Login failed",
+            message: "Usuario o contrasena incorrectos",
         });
     }
 }
@@ -25,7 +25,7 @@ async function refreshTokenController(req, res) {
     }
     catch (error) {
         return res.status(401).json({
-            message: error.message || "Refresh token failed",
+            message: "Sesion vencida o revocada. Inicie sesion nuevamente.",
         });
     }
 }

@@ -1,0 +1,9 @@
+CREATE TABLE "IncidentSheet" (
+ "incidentId" TEXT PRIMARY KEY REFERENCES "Incident"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+ "authorId" TEXT NOT NULL REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+ "notes" VARCHAR(4000) NOT NULL,
+ "baseUserIds" TEXT[] NOT NULL, "materials" JSONB NOT NULL, "evidenceUrls" TEXT[] NOT NULL,
+ "revision" INTEGER NOT NULL DEFAULT 1, "finalizedAt" TIMESTAMP(3), "finalContext" JSONB,
+ "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" TIMESTAMP(3) NOT NULL,
+ CHECK (("finalizedAt" IS NULL) = ("finalContext" IS NULL))
+);

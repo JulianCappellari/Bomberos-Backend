@@ -1,359 +1,233 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
+import { shiftsOverlap } from "./shifts.rules";
+import { PUBLIC_USER_SELECT } from "../../utils/public-user";
+import { serializable } from "../../utils/transaction";
+import { OperationError } from "../operations/operations.schemas";
+import { shiftInterval } from "./shifts.rules";
+import { notify, notifyCommand } from "../members/notifications.service";
 
-function normalizeNullable(value?: string | null) {
-  if (value === undefined || value === null || value === "") return null;
-  return value;
-}
+export const SHIFT_SCHEDULES = {
+  DAY: { startTime: "08:00", endTime: "20:00", label: "Guardia diurna" },
+  NIGHT: { startTime: "20:00", endTime: "08:00", label: "Guardia nocturna" },
+} as const;
 
-function toDateOnly(value: string) {
-  return new Date(`${value}T00:00:00.000Z`);
-}
+const include = {
+  createdBy: { select: PUBLIC_USER_SELECT },
+  assignments: { include: { user: { select: PUBLIC_USER_SELECT } } },
+} as const;
+const dateOnly = (value: string) => new Date(value + "T00:00:00Z");
+type ShiftInput = {
+  date: string; period: "DAY" | "NIGHT"; notes?: string | null; assignedUserIds?: string[];
+};
 
-function toDateEnd(value: string) {
-  return new Date(`${value}T23:59:59.999Z`);
-}
-
-function toDateKey(value: Date) {
-  return value.toISOString().slice(0, 10);
-}
-
-function timeToMinutes(value: string) {
-  const [hours, minutes] = value.split(":").map(Number);
-  return hours * 60 + minutes;
-}
-
-function timeRangesOverlap(
-  startA: string,
-  endA: string,
-  startB: string,
-  endB: string,
+async function validateAssignments(
+  tx: Prisma.TransactionClient,
+  data: { date: string; period: "DAY" | "NIGHT"; userIds: string[]; excludeShiftId?: string; keepUserIds?: string[] },
 ) {
-  return timeToMinutes(startA) < timeToMinutes(endB) &&
-    timeToMinutes(startB) < timeToMinutes(endA);
-}
-
-function uniqueUserIds(userIds: string[]) {
-  return Array.from(new Set(userIds));
-}
-
-async function ensureUsersExist(userIds: string[]) {
-  if (!userIds.length) return;
-
-  const users = await prisma.user.findMany({
-    where: {
-      id: { in: userIds },
-      deletedAt: null,
-      isActive: true,
-      isPendingApproval: false,
-    },
+  if (!data.userIds.length) throw new OperationError(400, "La guardia debe tener personal asignado");
+  const users = await tx.user.findMany({
+    where: { id: { in: data.userIds }, isActive: true, isPendingApproval: false, deletedAt: null },
     select: { id: true },
   });
-
-  const foundIds = new Set(users.map((u) => u.id));
-  const missing = userIds.filter((id) => !foundIds.has(id));
-
-  if (missing.length > 0) {
-    throw new Error(`Some users do not exist or are inactive: ${missing.join(", ")}`);
-  }
-}
-
-async function ensureNoOverlappingAssignments(data: {
-  date: string;
-  startTime: string;
-  endTime: string;
-  userIds: string[];
-  excludeShiftId?: string;
-}) {
-  if (!data.userIds.length) return;
-
-  const shifts = await prisma.shift.findMany({
+  if (users.length !== data.userIds.length) throw new OperationError(400, "Hay integrantes no habilitados");
+  const unavailable = await tx.personnelAvailability.findFirst({
+    where: { date: dateOnly(data.date), period: data.period, userId: { in: data.userIds }, status: "UNAVAILABLE" },
+    include: { user: { select: PUBLIC_USER_SELECT } },
+  });
+  if (unavailable) throw new OperationError(409,
+    `${unavailable.user.profile?.fullName || unavailable.user.username} no esta disponible para ese turno`);
+  // D07: una ausencia programada bloquea nuevas asignaciones de guardia que se superpongan.
+  const window = shiftInterval(data.date, SHIFT_SCHEDULES[data.period].startTime, SHIFT_SCHEDULES[data.period].endTime);
+  const absent = await tx.emergencyAvailability.findFirst({
+    where: { userId: { in: data.userIds.filter((id) => !data.keepUserIds?.includes(id)) }, cancelledAt: null, startsAt: { lt: new Date(window.end) }, OR: [{ endsAt: null }, { endsAt: { gt: new Date(Math.max(window.start, Date.now())) } }] },
+    include: { user: { select: PUBLIC_USER_SELECT } },
+  });
+  if (absent && window.end > Date.now()) throw new OperationError(409,
+    `${absent.user.profile?.fullName || absent.user.username} declaró una ausencia que se superpone con ese turno`);
+  const previous = dateOnly(data.date);
+  previous.setUTCDate(previous.getUTCDate() - 1);
+  const next = dateOnly(data.date);
+  next.setUTCDate(next.getUTCDate() + 1);
+  const shifts = await tx.shift.findMany({
     where: {
-      date: toDateOnly(data.date),
+      date: { gte: previous, lte: next },
       ...(data.excludeShiftId ? { id: { not: data.excludeShiftId } } : {}),
-      assignments: {
-        some: {
-          userId: {
-            in: data.userIds,
-          },
-        },
-      },
+      assignments: { some: { userId: { in: data.userIds } } },
     },
-    include: {
-      assignments: {
-        include: {
-          user: {
-            include: {
-              profile: true,
-            },
-          },
-        },
-      },
-    },
+    include,
   });
-
-  const conflicts = shifts.flatMap((shift) => {
-    if (
-      !timeRangesOverlap(
-        data.startTime,
-        data.endTime,
-        shift.startTime,
-        shift.endTime,
-      )
-    ) {
-      return [];
-    }
-
-    return shift.assignments
-      .filter((assignment) => data.userIds.includes(assignment.userId))
-      .map((assignment) => ({
-        name:
-          assignment.user.profile?.fullName ||
-          assignment.user.username ||
-          assignment.userId,
-        shiftType: shift.shiftType,
-        startTime: shift.startTime,
-        endTime: shift.endTime,
-      }));
-  });
-
-  if (conflicts.length > 0) {
-    const conflict = conflicts[0];
-    throw new Error(
-      `${conflict.name} ya tiene guardia ${conflict.shiftType} de ${conflict.startTime} a ${conflict.endTime}`,
-    );
+  const schedule = SHIFT_SCHEDULES[data.period];
+  for (const shift of shifts) {
+    if (!shiftsOverlap({ date: data.date, ...schedule }, {
+      date: shift.date.toISOString().slice(0, 10), startTime: shift.startTime, endTime: shift.endTime,
+    })) continue;
+    const person = shift.assignments.find((assignment) => data.userIds.includes(assignment.userId))!.user;
+    throw new OperationError(409, `${person.profile?.fullName || person.username} ya tiene una guardia en ese horario`);
   }
 }
-
-export async function createShift(data: {
-  date: string;
-  startTime: string;
-  endTime: string;
-  shiftType: string;
-  notes?: string | null;
-  assignedUserIds?: string[];
-  createdByUserId: string;
-}) {
-  const assignedUserIds = uniqueUserIds(data.assignedUserIds || []);
-
-  if (timeToMinutes(data.endTime) <= timeToMinutes(data.startTime)) {
-    throw new Error("La hora de fin debe ser posterior a la hora de inicio");
-  }
-
-  await ensureUsersExist(assignedUserIds);
-  await ensureNoOverlappingAssignments({
-    date: data.date,
-    startTime: data.startTime,
-    endTime: data.endTime,
-    userIds: assignedUserIds,
+async function ensurePeriodFree(tx: Prisma.TransactionClient, data: ShiftInput, exceptId?: string) {
+  const existing = await tx.shift.findFirst({
+    where: { date: dateOnly(data.date), period: data.period, ...(exceptId ? { id: { not: exceptId } } : {}) },
+    select: { id: true },
   });
-
-  const shift = await prisma.shift.create({
-    data: {
-      date: toDateOnly(data.date),
-      startTime: data.startTime,
-      endTime: data.endTime,
-      shiftType: data.shiftType,
-      notes: normalizeNullable(data.notes),
-      createdByUserId: data.createdByUserId,
-      assignments: assignedUserIds.length
-        ? {
-            create: assignedUserIds.map((userId) => ({
-              userId,
-            })),
-          }
-        : undefined,
-    },
-    include: {
-      createdBy: {
-        include: {
-          profile: true,
-        },
-      },
-      assignments: {
-        include: {
-          user: {
-            include: {
-              profile: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: data.createdByUserId,
-      action: "SHIFT_CREATED",
-      entityType: "Shift",
-      entityId: shift.id,
-      metadata: {
-        date: data.date,
-        startTime: data.startTime,
-        endTime: data.endTime,
-        shiftType: data.shiftType,
-      },
-    },
-  });
-
-  return shift;
+  if (existing) throw new OperationError(409, "Ya existe ese turno para la fecha seleccionada");
 }
-
-export async function getAllShifts(filters?: {
-  date?: string;
-  from?: string;
-  to?: string;
-}) {
-  const where = filters?.date
-    ? {
-        date: toDateOnly(filters.date),
-      }
-    : filters?.from || filters?.to
-      ? {
-          date: {
-            ...(filters.from ? { gte: toDateOnly(filters.from) } : {}),
-            ...(filters.to ? { lte: toDateEnd(filters.to) } : {}),
-          },
-        }
-      : undefined;
-
-  return prisma.shift.findMany({
-    where,
-    include: {
-      createdBy: {
-        include: {
-          profile: true,
-        },
-      },
-      assignments: {
-        include: {
-          user: {
-            include: {
-              profile: true,
-            },
-          },
-        },
-      },
-    },
-    orderBy: [
-      { date: "asc" },
-      { startTime: "asc" },
-    ],
-  });
+function fields(data: ShiftInput) {
+  const schedule = SHIFT_SCHEDULES[data.period];
+  return {
+    date: dateOnly(data.date), period: data.period, startTime: schedule.startTime,
+    endTime: schedule.endTime, shiftType: schedule.label, notes: data.notes?.trim() || null,
+  };
 }
-
-export async function getShiftById(shiftId: string) {
-  const shift = await prisma.shift.findUnique({
-    where: { id: shiftId },
-    include: {
-      createdBy: {
-        include: {
-          profile: true,
-        },
-      },
-      assignments: {
-        include: {
-          user: {
-            include: {
-              profile: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  if (!shift) {
-    throw new Error("Shift not found");
-  }
-
-  return shift;
-}
-
-export async function assignUsersToShift(
-  shiftId: string,
-  userIds: string[],
-  actorUserId?: string,
-) {
-  const shift = await prisma.shift.findUnique({
-    where: { id: shiftId },
-  });
-
-  if (!shift) {
-    throw new Error("Shift not found");
-  }
-
-  const uniqueIds = uniqueUserIds(userIds);
-
-  await ensureUsersExist(uniqueIds);
-  await ensureNoOverlappingAssignments({
-    date: toDateKey(shift.date),
-    startTime: shift.startTime,
-    endTime: shift.endTime,
-    userIds: uniqueIds,
-    excludeShiftId: shiftId,
-  });
-
-  const existingAssignments = await prisma.shiftAssignment.findMany({
-    where: {
-      shiftId,
-      userId: { in: uniqueIds },
-    },
-    select: { userId: true },
-  });
-
-  const existingUserIds = new Set(existingAssignments.map((a) => a.userId));
-  const newUserIds = uniqueIds.filter((id) => !existingUserIds.has(id));
-
-  if (newUserIds.length > 0) {
-    await prisma.shiftAssignment.createMany({
-      data: newUserIds.map((userId) => ({
-        shiftId,
-        userId,
-      })),
+export async function createShift(data: ShiftInput & { createdByUserId: string }) {
+  return serializable(async (tx) => {
+    const userIds = [...new Set(data.assignedUserIds || [])];
+    await ensurePeriodFree(tx, data);
+    await validateAssignments(tx, { ...data, userIds });
+    const shift = await tx.shift.create({
+      data: { ...fields(data), createdByUserId: data.createdByUserId, assignments: { create: userIds.map((userId) => ({ userId })) } },
+      include,
     });
-  }
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "SHIFT_USERS_ASSIGNED",
-      entityType: "Shift",
-      entityId: shiftId,
-      metadata: {
-        assignedUserIds: uniqueIds,
-      },
-    },
+    await tx.auditLog.create({
+      data: { actorUserId: data.createdByUserId, action: "SHIFT_CREATED", entityType: "Shift", entityId: shift.id,
+        metadata: { date: data.date, period: data.period, assignedUserIds: userIds } },
+    });
+    await notify(tx, userIds.filter((id) => id !== data.createdByUserId), `Guardia asignada: ${data.date} (${SHIFT_SCHEDULES[data.period].label})`, "/calendar");
+    return shift;
   });
-
-  return getShiftById(shiftId);
+}
+export async function getAllShifts(filters?: { date?: string; from?: string; to?: string }) {
+  return prisma.shift.findMany({
+    where: filters?.date ? { date: dateOnly(filters.date) } : {
+      date: { ...(filters?.from ? { gte: dateOnly(filters.from) } : {}), ...(filters?.to ? { lte: dateOnly(filters.to) } : {}) },
+    },
+    include, orderBy: [{ date: "asc" }, { startTime: "asc" }],
+  });
+}
+export async function getShiftById(id: string) {
+  const shift = await prisma.shift.findUnique({ where: { id }, include });
+  if (!shift) throw new OperationError(404, "Guardia no encontrada");
+  return shift;
+}
+export async function updateShift(id: string, data: ShiftInput, actorUserId: string) {
+  return serializable(async (tx) => {
+    const existing = await tx.shift.findUnique({ where: { id } });
+    if (!existing) throw new OperationError(404, "Guardia no encontrada");
+    const userIds = [...new Set(data.assignedUserIds || [])];
+    const previousIds = (await tx.shiftAssignment.findMany({ where: { shiftId: id }, select: { userId: true } })).map((row) => row.userId);
+    await ensurePeriodFree(tx, data, id);
+    await validateAssignments(tx, { ...data, userIds, excludeShiftId: id, keepUserIds: previousIds });
+    await tx.shift.update({ where: { id }, data: fields(data) });
+    await tx.shiftSwapRequest.updateMany({ where: { shiftId: id, status: { in: ["PENDING", "ACCEPTED"] } }, data: { status: "CANCELLED", decidedAt: new Date(), decisionNote: "La guardia fue reprogramada por jefatura" } });
+    // M02: toda reasignacion de jefatura se notifica a quienes entran y a quienes salen del turno.
+    await notify(tx, userIds.filter((userId) => !previousIds.includes(userId) && userId !== actorUserId), `Guardia asignada: ${data.date} (${SHIFT_SCHEDULES[data.period].label})`, "/calendar");
+    await notify(tx, previousIds.filter((userId) => !userIds.includes(userId) && userId !== actorUserId), `Fue relevado de la guardia del ${data.date} (${SHIFT_SCHEDULES[data.period].label})`, "/calendar");
+    await tx.shiftAssignment.deleteMany({ where: { shiftId: id } });
+    await tx.shiftAssignment.createMany({ data: userIds.map((userId) => ({ shiftId: id, userId })) });
+    await tx.auditLog.create({
+      data: { actorUserId, action: "SHIFT_UPDATED", entityType: "Shift", entityId: id,
+        metadata: { date: data.date, period: data.period, assignedUserIds: userIds } },
+    });
+    return tx.shift.findUniqueOrThrow({ where: { id }, include });
+  });
+}
+export async function assignUsersToShift(id: string, userIds: string[], actorUserId?: string) {
+  return serializable(async (tx) => {
+    const shift = await tx.shift.findUnique({ where: { id } });
+    if (!shift) throw new OperationError(404, "Guardia no encontrada");
+    const ids = [...new Set(userIds)];
+    await validateAssignments(tx, {
+      date: shift.date.toISOString().slice(0, 10), period: shift.period || (shift.startTime >= "18:00" ? "NIGHT" : "DAY"),
+      userIds: ids, excludeShiftId: id,
+    });
+    await tx.shiftAssignment.createMany({ data: ids.map((userId) => ({ shiftId: id, userId })), skipDuplicates: true });
+    await notify(tx, ids.filter((userId) => userId !== actorUserId), `Guardia asignada: ${shift.date.toISOString().slice(0, 10)} (${shift.shiftType})`, "/calendar");
+    await tx.auditLog.create({
+      data: { actorUserId, action: "SHIFT_USERS_ASSIGNED", entityType: "Shift", entityId: id, metadata: { assignedUserIds: ids } },
+    });
+    return tx.shift.findUniqueOrThrow({ where: { id }, include });
+  });
+}
+export async function deleteShift(id: string, actorUserId?: string) {
+  return serializable(async (tx) => {
+    const shift = await tx.shift.findUnique({ where: { id } });
+    if (!shift) throw new OperationError(404, "Guardia no encontrada");
+    const document = await tx.operationalDocument.findFirst({ where: { shiftId: id }, select: { id: true } });
+    if (document) throw new OperationError(409, "La guardia tiene actas vinculadas y debe conservarse");
+    await tx.shift.delete({ where: { id } });
+    await tx.auditLog.create({
+      data: { actorUserId, action: "SHIFT_DELETED", entityType: "Shift", entityId: id,
+        metadata: { date: shift.date.toISOString(), period: shift.period } },
+    });
+    return { message: "Guardia eliminada" };
+  });
 }
 
-export async function deleteShift(shiftId: string, actorUserId?: string) {
-  const shift = await prisma.shift.findUnique({
-    where: { id: shiftId },
+// ---- M02: intercambio de turno entre bomberos, con aprobacion de jefatura ----
+const SWAP_LOCK_MS = 24 * 3600000;
+const swapInclude = { shift: { select: { id: true, date: true, period: true, shiftType: true, startTime: true, endTime: true } }, from: { select: PUBLIC_USER_SELECT }, to: { select: PUBLIC_USER_SELECT }, decidedBy: { select: PUBLIC_USER_SELECT } } as const;
+function shiftStart(shift: { date: Date; startTime: string; endTime: string }) {
+  return shiftInterval(shift.date.toISOString().slice(0, 10), shift.startTime, shift.endTime).start;
+}
+function assertSwapWindow(shift: { date: Date; startTime: string; endTime: string }) {
+  if (shiftStart(shift) - Date.now() < SWAP_LOCK_MS) throw new OperationError(409, "Faltan menos de 24 horas para el turno: el intercambio está bloqueado y solo jefatura puede reasignar");
+}
+export async function listSwaps(actor: { userId: string; role: string }) {
+  const manager = ["ADMIN", "OPERATOR"].includes(actor.role);
+  return prisma.shiftSwapRequest.findMany({
+    where: manager ? { OR: [{ status: { in: ["PENDING", "ACCEPTED"] } }, { fromUserId: actor.userId }, { toUserId: actor.userId }] } : { OR: [{ fromUserId: actor.userId }, { toUserId: actor.userId }] },
+    include: swapInclude, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: 100,
   });
-
-  if (!shift) {
-    throw new Error("Shift not found");
-  }
-
-  await prisma.shift.delete({
-    where: { id: shiftId },
+}
+export async function requestSwap(shiftId: string, input: { toUserId: string; reason: string }, actorUserId: string) {
+  return serializable(async (tx) => {
+    const shift = await tx.shift.findUnique({ where: { id: shiftId }, include: { assignments: true } });
+    if (!shift) throw new OperationError(404, "Guardia no encontrada");
+    if (!shift.assignments.some((row) => row.userId === actorUserId)) throw new OperationError(403, "Solo puede proponer el intercambio de una guardia propia");
+    if (input.toUserId === actorUserId || shift.assignments.some((row) => row.userId === input.toUserId)) throw new OperationError(400, "La persona elegida ya integra esa guardia");
+    assertSwapWindow(shift);
+    if (!await tx.user.findFirst({ where: { id: input.toUserId, isActive: true, isPendingApproval: false, deletedAt: null }, select: { id: true } })) throw new OperationError(400, "Seleccione personal activo");
+    if (await tx.shiftSwapRequest.findFirst({ where: { shiftId, fromUserId: actorUserId, status: { in: ["PENDING", "ACCEPTED"] } } })) throw new OperationError(409, "Ya tiene un intercambio en trámite para esta guardia");
+    const row = await tx.shiftSwapRequest.create({ data: { shiftId, fromUserId: actorUserId, toUserId: input.toUserId, reason: input.reason }, include: swapInclude });
+    await tx.auditLog.create({ data: { actorUserId, action: "SHIFT_SWAP_REQUESTED", entityType: "Shift", entityId: shiftId, metadata: { swapId: row.id, toUserId: input.toUserId, reason: input.reason } } });
+    await notify(tx, [input.toUserId], `Le proponen cubrir una guardia: ${shift.date.toISOString().slice(0, 10)} (${shift.shiftType})`, "/calendar", input.reason);
+    return row;
   });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "SHIFT_DELETED",
-      entityType: "Shift",
-      entityId: shiftId,
-      metadata: {
-        shiftType: shift.shiftType,
-        date: shift.date,
-      },
-    },
+}
+export async function answerSwap(id: string, accept: boolean, actorUserId: string) {
+  return serializable(async (tx) => {
+    const row = await tx.shiftSwapRequest.findUnique({ where: { id }, include: { shift: true } });
+    if (!row || row.status !== "PENDING") throw new OperationError(409, "El intercambio ya fue respondido o cancelado");
+    const own = row.fromUserId === actorUserId;
+    if (!own && row.toUserId !== actorUserId) throw new OperationError(403, "Solo la persona propuesta responde el intercambio");
+    if (own && accept) throw new OperationError(403, "Quien propone solo puede cancelar su pedido");
+    if (accept) assertSwapWindow(row.shift);
+    const status = accept ? "ACCEPTED" : own ? "CANCELLED" : "REJECTED";
+    await tx.shiftSwapRequest.update({ where: { id }, data: { status, ...(accept ? { acceptedAt: new Date() } : { decidedAt: new Date() }) } });
+    await tx.auditLog.create({ data: { actorUserId, action: `SHIFT_SWAP_${status}`, entityType: "Shift", entityId: row.shiftId, metadata: { swapId: id } } });
+    if (accept) await notifyCommand(tx, "Intercambio de guardia para aprobar", "/calendar", `${row.shift.date.toISOString().slice(0, 10)} (${row.shift.shiftType}): ${row.reason}`);
+    if (!own) await notify(tx, [row.fromUserId], accept ? "Su intercambio de guardia fue aceptado; falta la aprobación de jefatura" : "Su intercambio de guardia fue rechazado", "/calendar");
+    return { status };
   });
-
-  return { message: "Shift deleted successfully" };
+}
+export async function decideSwap(id: string, input: { approve: boolean; note: string }, actor: { userId: string; role: string }) {
+  if (!["ADMIN", "OPERATOR"].includes(actor.role)) throw new OperationError(403, "Solo jefatura aprueba intercambios de guardia");
+  return serializable(async (tx) => {
+    const row = await tx.shiftSwapRequest.findUnique({ where: { id }, include: { shift: { include: { assignments: true } } } });
+    if (!row || row.status !== "ACCEPTED") throw new OperationError(409, "El intercambio no está aceptado por ambas personas o ya fue resuelto");
+    if ([row.fromUserId, row.toUserId].includes(actor.userId)) throw new OperationError(403, "Otra persona de jefatura debe resolver un intercambio propio");
+    const status = input.approve ? "APPROVED" : "REJECTED";
+    if (input.approve) {
+      assertSwapWindow(row.shift);
+      if (!row.shift.assignments.some((a) => a.userId === row.fromUserId)) throw new OperationError(409, "Quien pidió el intercambio ya no integra la guardia");
+      await validateAssignments(tx, { date: row.shift.date.toISOString().slice(0, 10), period: row.shift.period || (row.shift.startTime >= "18:00" ? "NIGHT" : "DAY"), userIds: [row.toUserId], excludeShiftId: row.shiftId });
+      await tx.shiftAssignment.delete({ where: { shiftId_userId: { shiftId: row.shiftId, userId: row.fromUserId } } });
+      await tx.shiftAssignment.create({ data: { shiftId: row.shiftId, userId: row.toUserId } });
+    }
+    await tx.shiftSwapRequest.update({ where: { id }, data: { status, decidedByUserId: actor.userId, decidedAt: new Date(), decisionNote: input.note } });
+    await tx.auditLog.create({ data: { actorUserId: actor.userId, action: `SHIFT_SWAP_${status}`, entityType: "Shift", entityId: row.shiftId, metadata: { swapId: id, from: row.fromUserId, to: row.toUserId, note: input.note } } });
+    await notify(tx, [row.fromUserId, row.toUserId], input.approve ? "Intercambio de guardia aprobado" : "Intercambio de guardia rechazado por jefatura", "/calendar", input.note);
+    return { status };
+  });
 }

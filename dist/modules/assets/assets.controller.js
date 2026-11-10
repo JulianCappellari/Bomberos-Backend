@@ -6,6 +6,7 @@ exports.getAssetByIdController = getAssetByIdController;
 exports.updateAssetController = updateAssetController;
 exports.deleteAssetController = deleteAssetController;
 exports.upsertVehicleDataController = upsertVehicleDataController;
+const special_permissions_1 = require("../../utils/special-permissions");
 const assets_schemas_1 = require("./assets.schemas");
 const assets_service_1 = require("./assets.service");
 async function createAssetController(req, res) {
@@ -52,7 +53,7 @@ async function updateAssetController(req, res) {
     try {
         const assetId = String(req.params.id);
         const parsed = assets_schemas_1.updateAssetSchema.parse(req.body);
-        const result = await (0, assets_service_1.updateAsset)(assetId, parsed, req.user?.userId);
+        const result = await (0, assets_service_1.updateAsset)(assetId, parsed, req.user?.userId, { fleetManager: (0, special_permissions_1.hasPermission)(req.user, "FLEET"), command: ["ADMIN", "OPERATOR"].includes(req.user?.role || "") });
         return res.status(200).json(result);
     }
     catch (error) {

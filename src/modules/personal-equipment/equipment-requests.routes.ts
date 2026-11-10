@@ -1,0 +1,14 @@
+import { Router } from "express";
+import { authenticate } from "../../middlewares/auth.middleware";
+import { rateLimit } from "../../middlewares/rate-limit.middleware";
+import { equipmentRevisionSchema } from "./personal-equipment.schemas";
+import { createEquipmentRequestSchema, editEquipmentRequestSchema, reviewEquipmentRequestSchema, equipmentRequestListSchema } from "./equipment-requests.schemas";
+import { listEquipmentRequests, createEquipmentRequest, editEquipmentRequest, reviewEquipmentRequest, cancelEquipmentRequest } from "./equipment-requests.service";
+const router = Router();
+router.use(authenticate);
+router.get("/", async (req, res) => { res.json(await listEquipmentRequests(equipmentRequestListSchema.parse(req.query), req.user!)); });
+router.post("/", rateLimit({ windowMs: 60000, maxRequests: 20 }), async (req, res) => { res.status(201).json(await createEquipmentRequest(createEquipmentRequestSchema.parse(req.body), req.user!.userId)); });
+router.put("/:id", async (req, res) => { res.json(await editEquipmentRequest(String(req.params.id), editEquipmentRequestSchema.parse(req.body), req.user!)); });
+router.post("/:id/review", async (req, res) => { res.json(await reviewEquipmentRequest(String(req.params.id), reviewEquipmentRequestSchema.parse(req.body), req.user!)); });
+router.post("/:id/cancel", async (req, res) => { res.json(await cancelEquipmentRequest(String(req.params.id), equipmentRevisionSchema.parse(req.body).revision, req.user!)); });
+export default router;

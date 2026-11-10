@@ -1,0 +1,28 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const fleet_corrections_routes_1 = __importDefault(require("./fleet-corrections.routes"));
+const auth_middleware_1 = require("../../middlewares/auth.middleware");
+const rate_limit_middleware_1 = require("../../middlewares/rate-limit.middleware");
+const work_schemas_1 = require("../work/work.schemas");
+const fleet_schemas_1 = require("./fleet.schemas");
+const fleet_service_1 = require("./fleet.service");
+const departures_service_1 = require("./departures.service");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.authenticate);
+router.use(fleet_corrections_routes_1.default);
+router.use((0, rate_limit_middleware_1.rateLimit)({ windowMs: 60000, maxRequests: 180 }));
+router.get("/departures", async (req, res) => { res.json(await (0, departures_service_1.listDepartures)(fleet_schemas_1.fleetQuery.parse(req.query).page, req.user)); });
+router.post("/departures", async (req, res) => { res.status(201).json(await (0, departures_service_1.recordDeparture)(departures_service_1.departureSchema.parse(req.body), req.user)); });
+router.post("/departures/:id/void", async (req, res) => { const data = fleet_schemas_1.voidSchema.extend({ revision: work_schemas_1.revision }).parse(req.body); res.json(await (0, departures_service_1.voidDeparture)(String(req.params.id), data.revision, data.notes, req.user)); });
+router.get("/fuel", async (req, res) => { res.json(await (0, fleet_service_1.listFuel)(fleet_schemas_1.fleetQuery.parse(req.query), req.user)); });
+router.post("/fuel", async (req, res) => { res.status(201).json(await (0, fleet_service_1.recordFuel)(fleet_schemas_1.fuelSchema.parse(req.body), req.user)); });
+router.post("/fuel/:id/void", async (req, res) => { res.json(await (0, fleet_service_1.voidFuel)(String(req.params.id), fleet_schemas_1.voidSchema.parse(req.body).notes, req.user)); });
+router.get("/water", async (req, res) => { res.json(await (0, fleet_service_1.listWater)(fleet_schemas_1.fleetQuery.parse(req.query), req.user)); });
+router.post("/water", async (req, res) => { res.status(201).json(await (0, fleet_service_1.recordWater)(fleet_schemas_1.waterSchema.parse(req.body), req.user)); });
+router.post("/water/:id/payment", async (req, res) => { res.json(await (0, fleet_service_1.settleWater)(String(req.params.id), fleet_schemas_1.waterPaymentSchema.parse(req.body), req.user)); });
+router.post("/water/:id/void", async (req, res) => { const input = fleet_schemas_1.voidSchema.extend({ revision: work_schemas_1.revision }).parse(req.body); res.json(await (0, fleet_service_1.voidWater)(String(req.params.id), input.revision, input.notes, req.user)); });
+exports.default = router;

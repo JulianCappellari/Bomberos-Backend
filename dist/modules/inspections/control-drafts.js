@@ -1,0 +1,31 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.draftParticipants = draftParticipants;
+const express_1 = require("express");
+const zod_1 = require("zod");
+const transaction_1 = require("../../utils/transaction");
+const require_qr_presence_1 = require("../../utils/require-qr-presence");
+const station_time_1 = require("../../utils/station-time");
+const operations_schemas_1 = require("../operations/operations.schemas");
+const groups_service_1 = require("../members/groups.service");
+const public_user_1 = require("../../utils/public-user");
+function draftParticipants(value) { return zod_1.z.array(zod_1.z.object({ userId: zod_1.z.string(), attendanceId: zod_1.z.string(), joinedAt: zod_1.z.string().datetime() })).parse(value); }
+async function group(tx, userId) { const member = await tx.controlGroupMember.findUnique({ where: { userId }, include: { group: { include: { members: true } } } }); if (!member || !(0, groups_service_1.nextControlWeek)(member.group.startsOn, member.group.repeatWeeks, new Date((0, station_time_1.stationDate)() + "T00:00:00Z")).current)
+    throw new operations_schemas_1.OperationError(403, "No corresponde control a su grupo esta semana"); return member.group.members.map(m => m.userId); }
+// H04: el control lo inicia el grupo de la semana; se admiten ayudantes de otros grupos con presencia QR.
+async function candidates(tx, userId) { const ids = new Set(await group(tx, userId)); const rows = await tx.attendance.findMany({ where: { status: "OPEN", checkInAt: { lte: new Date() }, checkInQrId: { not: null }, checkInTrust: { not: "REJECTED" }, user: { isActive: true, isPendingApproval: false, deletedAt: null, missionCrew: { none: { movement: { returnedAt: null } } } } }, select: { id: true, userId: true, user: { select: public_user_1.PUBLIC_USER_SELECT } }, orderBy: { checkInAt: "asc" } }); return rows.filter(r => (r.user.profile?.rank || "").toLowerCase() !== "administrador").map(r => ({ ...r, helper: !ids.has(r.userId) })); }
+const router = (0, express_1.Router)();
+router.post("/", async (req, res) => { const { vehicleId } = zod_1.z.object({ vehicleId: zod_1.z.string().min(1) }).strict().parse(req.body), ownerId = req.user.userId; res.status(201).json(await (0, transaction_1.serializable)(async (tx) => { await (0, require_qr_presence_1.requireQrPresence)(tx, ownerId); await group(tx, ownerId); if (!await tx.vehicle.findFirst({ where: { id: vehicleId, asset: { deletedAt: null } } }))
+    throw new operations_schemas_1.OperationError(404, "Móvil no disponible"); const old = await tx.controlDraft.findFirst({ where: { ownerId, vehicleId, closedAt: null } }); if (old)
+    return old; const current = (await candidates(tx, ownerId)).find(a => a.userId === ownerId); if (!current)
+    throw new operations_schemas_1.OperationError(403, "Debe tener asistencia QR abierta"); const now = new Date(); const row = await tx.controlDraft.create({ data: { ownerId, vehicleId, startedAt: now, participants: [{ userId: ownerId, attendanceId: current.id, joinedAt: now.toISOString() }] } }); await tx.auditLog.create({ data: { actorUserId: ownerId, action: "CONTROL_DRAFT_STARTED", entityType: "ControlDraft", entityId: row.id, metadata: { vehicleId, attendanceId: current.id } } }); return row; })); });
+router.get("/:id", async (req, res) => res.json(await (0, transaction_1.serializable)(async (tx) => { const row = await tx.controlDraft.findUnique({ where: { id: String(req.params.id) } }); if (!row || row.ownerId !== req.user.userId)
+    throw new operations_schemas_1.OperationError(404, "Borrador no disponible"); return { ...row, candidates: row.closedAt ? [] : await candidates(tx, row.ownerId) }; })));
+router.put("/:id/participants", async (req, res) => { const input = zod_1.z.object({ revision: zod_1.z.number().int().positive(), userIds: zod_1.z.array(zod_1.z.string().min(1)).min(1).max(40).refine(ids => new Set(ids).size === ids.length) }).strict().parse(req.body), ownerId = req.user.userId, id = String(req.params.id); res.json(await (0, transaction_1.serializable)(async (tx) => { await (0, require_qr_presence_1.requireQrPresence)(tx, ownerId); const row = await tx.controlDraft.findUnique({ where: { id } }); if (!row || row.ownerId !== ownerId || row.closedAt || row.revision !== input.revision)
+    throw new operations_schemas_1.OperationError(409, "El borrador cambió o fue finalizado"); if (!input.userIds.includes(ownerId))
+    throw new operations_schemas_1.OperationError(400, "El responsable que inició el control debe participar"); const before = draftParticipants(row.participants), available = await candidates(tx, ownerId); const participants = input.userIds.map(userId => { const previous = before.find(p => p.userId === userId); if (previous)
+    return previous; const current = available.find(a => a.userId === userId); if (!current)
+    throw new operations_schemas_1.OperationError(403, "Solo puede agregar integrantes con asistencia QR abierta y sin despliegue"); return { userId, attendanceId: current.id, joinedAt: new Date().toISOString() }; }); const result = await tx.controlDraft.update({ where: { id }, data: { participants, revision: { increment: 1 } } }); await tx.auditLog.create({ data: { actorUserId: ownerId, action: "CONTROL_DRAFT_TEAM_CHANGED", entityType: "ControlDraft", entityId: id, metadata: { before, after: participants } } }); return result; })); });
+router.post("/:id/abandon", async (req, res) => { const { revision, reason } = zod_1.z.object({ revision: zod_1.z.number().int().positive(), reason: zod_1.z.string().trim().min(10).max(1000) }).strict().parse(req.body), id = String(req.params.id), ownerId = req.user.userId; res.json(await (0, transaction_1.serializable)(async (tx) => { if (!(await tx.controlDraft.updateMany({ where: { id, ownerId, revision, closedAt: null }, data: { closedAt: new Date(), revision: { increment: 1 } } })).count)
+    throw new operations_schemas_1.OperationError(409, "El borrador cambió o ya fue finalizado"); await tx.auditLog.create({ data: { actorUserId: ownerId, action: "CONTROL_DRAFT_ABANDONED", entityType: "ControlDraft", entityId: id, metadata: { reason } } }); return { message: "Borrador descartado sin crear un control" }; })); });
+exports.default = router;

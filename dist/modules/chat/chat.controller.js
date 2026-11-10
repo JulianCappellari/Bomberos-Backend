@@ -5,9 +5,12 @@ exports.createChatMessageController = createChatMessageController;
 exports.updateChatMessageController = updateChatMessageController;
 exports.deleteChatMessageController = deleteChatMessageController;
 exports.pinChatMessageController = pinChatMessageController;
+const operations_schemas_1 = require("../operations/operations.schemas");
 const chat_schemas_1 = require("./chat.schemas");
 const chat_service_1 = require("./chat.service");
 function resolveStatus(error) {
+    if (error instanceof operations_schemas_1.OperationError)
+        return error.status;
     const message = error instanceof Error ? error.message : "";
     if (message.includes("not found"))
         return 404;
@@ -58,6 +61,7 @@ async function updateChatMessageController(req, res) {
         const message = await (0, chat_service_1.updateChatMessage)({
             messageId: String(req.params.id),
             actorUserId,
+            actorRole: req.user.role,
             body: parsed.body,
         });
         return res.status(200).json(message);
@@ -77,6 +81,7 @@ async function deleteChatMessageController(req, res) {
         const result = await (0, chat_service_1.deleteChatMessage)({
             messageId: String(req.params.id),
             actorUserId,
+            actorRole: req.user.role,
         });
         return res.status(200).json(result);
     }
@@ -96,6 +101,7 @@ async function pinChatMessageController(req, res) {
         const message = await (0, chat_service_1.setChatMessagePinned)({
             messageId: String(req.params.id),
             actorUserId,
+            actorRole: req.user.role,
             isPinned: parsed.isPinned,
         });
         return res.status(200).json(message);

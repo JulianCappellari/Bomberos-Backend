@@ -1,5 +1,7 @@
 import { prisma } from "../../config/prisma";
-import { isCommandRank } from "../../utils/firefighter-ranks";
+import { isCommandRank, effectiveAccessRole } from "../../utils/firefighter-ranks";
+import { OperationError } from "../operations/operations.schemas";
+import { serializable } from "../../utils/transaction";
 
 const MESSAGE_INCLUDE = {
   author: {
@@ -28,6 +30,7 @@ async function getActorRank(actorUserId: string) {
       isPendingApproval: false,
     },
     select: {
+      role: true,
       profile: {
         select: {
           rank: true,
@@ -36,14 +39,17 @@ async function getActorRank(actorUserId: string) {
     },
   });
 
-  return actor?.profile?.rank ?? null;
+  if (!actor) return null;
+  const role = effectiveAccessRole(actor.role, actor.profile?.rank);
+  return role === "ADMIN" ? "Administrador" : role === "OPERATOR" ? "Sub oficial" : actor.profile?.rank ?? null;
 }
 
-async function assertCommandRank(actorUserId: string) {
+async function assertCommandRank(actorUserId: string, sessionRole?: string) {
+  if (sessionRole && !["ADMIN","OPERATOR"].includes(sessionRole)) throw new OperationError(403,"El modo de sesión no permite moderar comunicaciones");
   const actorRank = await getActorRank(actorUserId);
 
   if (!isCommandRank(actorRank)) {
-    throw new Error("Only oficiales and sub oficiales can moderate chat messages");
+    throw new OperationError(403, "Solo oficial, suboficial o administrador puede moderar comunicaciones");
   }
 }
 
@@ -72,6 +78,7 @@ export async function createChatMessage(data: {
   body: string;
   authorUserId: string;
 }) {
+  return serializable(async (prisma) => {
   const message = await prisma.chatMessage.create({
     data: {
       body: data.body,
@@ -93,13 +100,17 @@ export async function createChatMessage(data: {
   });
 
   return message;
+  });
 }
 
 export async function updateChatMessage(data: {
   messageId: string;
   actorUserId: string;
+  actorRole?: string;
   body: string;
 }) {
+  return serializable(async (prisma) => {
+  await prisma.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${data.messageId} FOR UPDATE`;
   const message = await prisma.chatMessage.findFirst({
     where: {
       id: data.messageId,
@@ -108,6 +119,9 @@ export async function updateChatMessage(data: {
     select: {
       id: true,
       authorUserId: true,
+      editedAt: true,
+      createdAt: true,
+      body: true,
     },
   });
 
@@ -115,15 +129,14 @@ export async function updateChatMessage(data: {
     throw new Error("Chat message not found");
   }
 
-  if (message.authorUserId !== data.actorUserId) {
-    throw new Error("You are not allowed to update this message");
-  }
+  // N02: nadie edita mensajes ajenos; solo su autor.
+  if (message.authorUserId !== data.actorUserId) throw new OperationError(403, "Solo el autor puede editar su mensaje");
 
   const updated = await prisma.chatMessage.update({
     where: { id: data.messageId },
     data: {
       body: data.body,
-      editedAt: new Date(),
+      editedAt: new Date(Math.max(Date.now(), (message.editedAt || message.createdAt).getTime() + 1)),
     },
     include: MESSAGE_INCLUDE,
   });
@@ -136,18 +149,30 @@ export async function updateChatMessage(data: {
       entityId: updated.id,
       metadata: {
         bodyLength: data.body.length,
+        before: message.body,
+        after: data.body,
+        authorUserId: message.authorUserId,
       },
     },
   });
+  // N05: al editar se restablece el acuse de todos (el acuse queda ligado al contenido) y se avisa
+  // a todo el personal para que vuelva a leer y confirmar.
+  if (message.body !== data.body) {
+    const people = await prisma.user.findMany({ where: { isActive: true, isPendingApproval: false, deletedAt: null, id: { not: data.actorUserId } }, select: { id: true } });
+    await prisma.memberNotification.createMany({ data: people.map((person) => ({ userId: person.id, title: "Un mensaje fue editado: vuelva a leerlo y confirme la lectura", href: "/chat", body: data.body.slice(0, 300) })) });
+  }
 
   return updated;
+  });
 }
 
 export async function deleteChatMessage(data: {
   messageId: string;
   actorUserId: string;
+  actorRole?: string;
 }) {
-  await assertCommandRank(data.actorUserId);
+  return serializable(async (prisma) => {
+  await prisma.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${data.messageId} FOR UPDATE`;
 
   const message = await prisma.chatMessage.findFirst({
     where: {
@@ -163,6 +188,7 @@ export async function deleteChatMessage(data: {
   if (!message) {
     throw new Error("Chat message not found");
   }
+  if (message.authorUserId !== data.actorUserId) await assertCommandRank(data.actorUserId,data.actorRole);
 
   const deleted = await prisma.chatMessage.update({
     where: { id: data.messageId },
@@ -186,14 +212,18 @@ export async function deleteChatMessage(data: {
   });
 
   return { message: "Chat message deleted successfully" };
+  });
 }
 
 export async function setChatMessagePinned(data: {
   messageId: string;
   actorUserId: string;
+  actorRole?: string;
   isPinned: boolean;
 }) {
-  await assertCommandRank(data.actorUserId);
+  await assertCommandRank(data.actorUserId,data.actorRole);
+  return serializable(async (prisma) => {
+  await prisma.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${data.messageId} FOR UPDATE`;
 
   const message = await prisma.chatMessage.findFirst({
     where: {
@@ -230,4 +260,5 @@ export async function setChatMessagePinned(data: {
   });
 
   return updated;
+  });
 }

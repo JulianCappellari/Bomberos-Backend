@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.upsertVehicleDataSchema = exports.updateAssetSchema = exports.createAssetSchema = void 0;
 const zod_1 = require("zod");
 const vehicleSchema = zod_1.z.object({
+    kind: zod_1.z.enum(["UNCLASSIFIED", "ENGINE", "TANKER", "RESCUE", "AMBULANCE", "SUPPORT", "OTHER"]).optional(),
     unitNumber: zod_1.z.string().min(1).max(20),
     plate: zod_1.z.string().max(20).optional().nullable(),
     year: zod_1.z.number().int().optional(),
@@ -25,6 +26,7 @@ exports.updateAssetSchema = zod_1.z.object({
     lastCheckDate: zod_1.z.string().datetime().optional().nullable(),
 });
 exports.upsertVehicleDataSchema = zod_1.z.object({
+    kind: zod_1.z.enum(["UNCLASSIFIED", "ENGINE", "TANKER", "RESCUE", "AMBULANCE", "SUPPORT", "OTHER"]).optional(),
     unitNumber: zod_1.z.string().min(1).max(20).optional(),
     plate: zod_1.z.string().max(20).optional().nullable(),
     year: zod_1.z.number().int().optional(),

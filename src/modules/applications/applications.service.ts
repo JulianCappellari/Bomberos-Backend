@@ -1,5 +1,7 @@
 import bcrypt from "bcrypt";
+import { randomBytes, randomUUID } from "node:crypto";
 import { prisma } from "../../config/prisma";
+import { serializable } from "../../utils/transaction";
 
 function normalizeNullable(value?: string | null) {
   if (value === undefined || value === null || value === "") return null;
@@ -12,7 +14,8 @@ function toDateOrNull(value?: string | null) {
 }
 
 export async function createApplication(data: any) {
-  const usernameInUsers = await prisma.user.findUnique({
+  return serializable(async (tx) => {
+  const usernameInUsers = await tx.user.findUnique({
     where: { username: data.desiredUsername },
   });
 
@@ -20,7 +23,7 @@ export async function createApplication(data: any) {
     throw new Error("Username already exists");
   }
 
-  const pendingSameUsername = await prisma.volunteerApplication.findFirst({
+  const pendingSameUsername = await tx.volunteerApplication.findFirst({
     where: {
       desiredUsername: data.desiredUsername,
       status: "PENDING",
@@ -31,7 +34,7 @@ export async function createApplication(data: any) {
     throw new Error("There is already a pending application with that username");
   }
 
-  const dniInProfiles = await prisma.firefighterProfile.findUnique({
+  const dniInProfiles = await tx.firefighterProfile.findUnique({
     where: { dni: data.dni },
   });
 
@@ -39,7 +42,7 @@ export async function createApplication(data: any) {
     throw new Error("DNI already exists");
   }
 
-  const pendingSameDni = await prisma.volunteerApplication.findFirst({
+  const pendingSameDni = await tx.volunteerApplication.findFirst({
     where: {
       dni: data.dni,
       status: "PENDING",
@@ -50,7 +53,7 @@ export async function createApplication(data: any) {
     throw new Error("There is already a pending application with that DNI");
   }
 
-  const application = await prisma.volunteerApplication.create({
+  const application = await tx.volunteerApplication.create({
     data: {
       desiredUsername: data.desiredUsername,
       email: normalizeNullable(data.email),
@@ -71,6 +74,7 @@ export async function createApplication(data: any) {
   });
 
   return application;
+  });
 }
 
 export async function getAllApplications(status?: string) {
@@ -99,7 +103,10 @@ export async function getApplicationById(applicationId: string) {
 }
 
 export async function approveApplication(applicationId: string, actorUserId: string) {
-  const application = await prisma.volunteerApplication.findUnique({
+  const initialPassword = randomBytes(24).toString("base64url");
+  const passwordHash = await bcrypt.hash(initialPassword, 12);
+  return serializable(async (tx) => {
+  const application = await tx.volunteerApplication.findUnique({
     where: { id: applicationId },
   });
 
@@ -111,7 +118,7 @@ export async function approveApplication(applicationId: string, actorUserId: str
     throw new Error("Only pending applications can be approved");
   }
 
-  const usernameInUsers = await prisma.user.findUnique({
+  const usernameInUsers = await tx.user.findUnique({
     where: { username: application.desiredUsername },
   });
 
@@ -119,7 +126,7 @@ export async function approveApplication(applicationId: string, actorUserId: str
     throw new Error("Username already exists in users");
   }
 
-  const dniInProfiles = await prisma.firefighterProfile.findUnique({
+  const dniInProfiles = await tx.firefighterProfile.findUnique({
     where: { dni: application.dni },
   });
 
@@ -127,15 +134,12 @@ export async function approveApplication(applicationId: string, actorUserId: str
     throw new Error("DNI already exists in profiles");
   }
 
-  const passwordHash = await bcrypt.hash(application.dni, 10);
-
-  const userCount = await prisma.user.count();
-
-  const user = await prisma.user.create({
+  const user = await tx.user.create({
     data: {
       username: application.desiredUsername,
       email: application.email,
       passwordHash,
+      mustChangePassword: true,
       role: "FIREFIGHTER",
       isActive: true,
       isPendingApproval: false,
@@ -145,7 +149,7 @@ export async function approveApplication(applicationId: string, actorUserId: str
           dni: application.dni,
           birthDate: application.birthDate,
           rank: "Aspirante",
-          badge: `B-${String(userCount + 1).padStart(3, "0")}`,
+          badge: `B-${randomUUID().slice(0, 20)}`,
           phone: application.phone,
           altPhone: application.altPhone,
           address: application.address,
@@ -167,7 +171,7 @@ export async function approveApplication(applicationId: string, actorUserId: str
     },
   });
 
-  const updatedApplication = await prisma.volunteerApplication.update({
+  const updatedApplication = await tx.volunteerApplication.update({
     where: { id: applicationId },
     data: {
       status: "APPROVED",
@@ -177,7 +181,7 @@ export async function approveApplication(applicationId: string, actorUserId: str
     },
   });
 
-  await prisma.auditLog.create({
+  await tx.auditLog.create({
     data: {
       actorUserId,
       action: "APPLICATION_APPROVED",
@@ -192,8 +196,10 @@ export async function approveApplication(applicationId: string, actorUserId: str
 
   return {
     application: updatedApplication,
-    user,
+    user: { id: user.id, username: user.username },
+    initialPassword,
   };
+  });
 }
 
 export async function rejectApplication(
@@ -201,7 +207,8 @@ export async function rejectApplication(
   actorUserId: string,
   rejectReason?: string | null,
 ) {
-  const application = await prisma.volunteerApplication.findUnique({
+  return serializable(async (tx) => {
+  const application = await tx.volunteerApplication.findUnique({
     where: { id: applicationId },
   });
 
@@ -213,7 +220,7 @@ export async function rejectApplication(
     throw new Error("Only pending applications can be rejected");
   }
 
-  const updatedApplication = await prisma.volunteerApplication.update({
+  const updatedApplication = await tx.volunteerApplication.update({
     where: { id: applicationId },
     data: {
       status: "REJECTED",
@@ -223,7 +230,7 @@ export async function rejectApplication(
     },
   });
 
-  await prisma.auditLog.create({
+  await tx.auditLog.create({
     data: {
       actorUserId,
       action: "APPLICATION_REJECTED",
@@ -237,4 +244,5 @@ export async function rejectApplication(
   });
 
   return updatedApplication;
+  });
 }

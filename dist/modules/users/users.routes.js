@@ -1,11 +1,28 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
+const guard_eligibility_service_1 = require("./guard-eligibility.service");
 const users_controller_1 = require("./users.controller");
 const auth_middleware_1 = require("../../middlewares/auth.middleware");
 const role_middleware_1 = require("../../middlewares/role.middleware");
+const zod_1 = require("zod");
+const special_permissions_1 = require("../../utils/special-permissions");
+const special_permissions_service_1 = require("./special-permissions.service");
+const account_administration_service_1 = require("./account-administration.service");
+const rate_limit_middleware_1 = require("../../middlewares/rate-limit.middleware");
 const router = (0, express_1.Router)();
 router.use(auth_middleware_1.authenticate);
+router.put("/:id/guard-eligibility", (0, role_middleware_1.authorize)("ADMIN"), async (req, res) => {
+    const { enabled, revision, reason } = zod_1.z.object({ enabled: zod_1.z.boolean(), revision: zod_1.z.string().datetime(), reason: zod_1.z.string().trim().min(10).max(1000) }).strict().parse(req.body);
+    res.json(await (0, guard_eligibility_service_1.setGuardEligibility)(String(req.params.id), enabled, revision, reason, req.user.userId));
+});
+router.put("/:id/permissions", (0, role_middleware_1.authorize)("ADMIN"), async (req, res) => {
+    const { permission, enabled, revision, reason } = zod_1.z.object({ permission: zod_1.z.enum(special_permissions_1.SPECIAL_PERMISSIONS), enabled: zod_1.z.boolean(), revision: zod_1.z.string().datetime(), reason: zod_1.z.string().trim().min(10).max(1000) }).strict().parse(req.body);
+    res.json(await (0, special_permissions_service_1.setSpecialPermission)(String(req.params.id), permission, enabled, revision, reason, req.user.userId));
+});
+const accountAction = zod_1.z.object({ reason: zod_1.z.string().trim().min(10).max(2000), revision: zod_1.z.string().datetime() }).strict();
+router.delete("/:id", (0, role_middleware_1.authorize)("ADMIN"), async (req, res) => { res.json(await (0, account_administration_service_1.administerAccount)(String(req.params.id), req.user, accountAction.parse(req.body), true)); });
+router.post("/:id/reset-password", (0, role_middleware_1.authorize)("ADMIN"), (0, rate_limit_middleware_1.rateLimit)({ windowMs: 60000, maxRequests: 5 }), async (req, res) => { res.json(await (0, account_administration_service_1.administerAccount)(String(req.params.id), req.user, accountAction.parse(req.body), false)); });
 router.get("/roster", users_controller_1.getActiveUserRosterController);
 router.get("/", (0, role_middleware_1.authorize)("ADMIN"), users_controller_1.getAllUsersController);
 router.get("/:id", (0, role_middleware_1.authorize)("ADMIN"), users_controller_1.getUserByIdController);

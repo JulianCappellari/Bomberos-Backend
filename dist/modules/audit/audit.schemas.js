@@ -6,4 +6,7 @@ exports.listAuditLogsQuerySchema = zod_1.z.object({
     limit: zod_1.z.coerce.number().int().min(1).max(100).default(50),
     entityType: zod_1.z.string().trim().min(1).max(80).optional(),
     action: zod_1.z.string().trim().min(1).max(120).optional(),
+    q: zod_1.z.string().trim().min(1).max(120).optional(),
+    from: zod_1.z.coerce.date().optional(),
+    to: zod_1.z.coerce.date().optional(),
 });

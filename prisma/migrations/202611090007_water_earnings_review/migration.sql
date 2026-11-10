@@ -1,0 +1,1 @@
+ALTER TABLE "WaterTrip" ADD COLUMN "earningsApprovedAt" TIMESTAMP(3), ADD COLUMN "earningsApprovedById" TEXT REFERENCES "User"("id") ON DELETE RESTRICT, ADD COLUMN "earningsApprovalNote" VARCHAR(1000);

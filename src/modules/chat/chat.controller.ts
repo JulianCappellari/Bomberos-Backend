@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { OperationError } from "../operations/operations.schemas";
 import {
   createChatMessageSchema,
   listChatMessagesQuerySchema,
@@ -14,6 +15,7 @@ import {
 } from "./chat.service";
 
 function resolveStatus(error: unknown) {
+  if (error instanceof OperationError) return error.status;
   const message = error instanceof Error ? error.message : "";
 
   if (message.includes("not found")) return 404;
@@ -74,6 +76,7 @@ export async function updateChatMessageController(req: Request, res: Response) {
     const message = await updateChatMessage({
       messageId: String(req.params.id),
       actorUserId,
+      actorRole: req.user!.role,
       body: parsed.body,
     });
 
@@ -96,6 +99,7 @@ export async function deleteChatMessageController(req: Request, res: Response) {
     const result = await deleteChatMessage({
       messageId: String(req.params.id),
       actorUserId,
+      actorRole: req.user!.role,
     });
 
     return res.status(200).json(result);
@@ -118,6 +122,7 @@ export async function pinChatMessageController(req: Request, res: Response) {
     const message = await setChatMessagePinned({
       messageId: String(req.params.id),
       actorUserId,
+      actorRole: req.user!.role,
       isPinned: parsed.isPinned,
     });
 

@@ -8,6 +8,7 @@ datasource db {
 }
 
 enum UserRole {
+  GUARD
   ADMIN
   FIREFIGHTER
   OPERATOR
@@ -56,6 +57,10 @@ enum AlertResponseType {
   NOT_GOING
 }
 
+enum AlertAttendanceOutcome {
+  NO_SHOW
+}
+
 enum IncidentStatus {
   OPEN
   CLOSED
@@ -102,7 +107,79 @@ enum AttendanceStatus {
   CLOSED
 }
 
+enum ShiftPeriod {
+  DAY
+  NIGHT
+}
+
+enum AvailabilityStatus {
+  AVAILABLE
+  ON_CALL
+  UNAVAILABLE
+}
+
+enum MaintenanceStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+}
+
+enum DocumentKind {
+  PROTOCOL
+  SHIFT_REPORT
+  INCIDENT_REPORT
+}
+
+enum DocumentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ComplianceSubjectType {
+  USER
+  ASSET
+}
+
+enum ComplianceCategory {
+  TRAINING
+  CERTIFICATION
+  MEDICAL_EXAM
+  DRIVER_LICENSE
+  INSURANCE
+  VTV
+  SERVICE
+  SCBA_SERVICE
+  OTHER
+}
+
 model User {
+  attendanceCorrectionsRequested AttendanceCorrection[] @relation("CorrectionRequester")
+  attendanceCorrectionsDecided AttendanceCorrection[] @relation("CorrectionApprover")
+  taskTransfersSent WorkTaskTransfer[] @relation("TransferFrom")
+  taskTransfersReceived WorkTaskTransfer[] @relation("TransferTo")
+  shiftSwapsRequested ShiftSwapRequest[] @relation("SwapFrom")
+  shiftSwapsReceived ShiftSwapRequest[] @relation("SwapTo")
+  shiftSwapsDecided ShiftSwapRequest[] @relation("SwapDecider")
+  waterEarningsReviewed WaterTrip[] @relation("WaterEarningsReviewer")
+  controlDrafts ControlDraft[]
+  expenseApprovals ExpenseApproval[]
+  expenseClaims ExpenseClaim[]
+  financeChief Boolean @default(false)
+  specialPermissions String[] @default([])
+  emergencyStatusConfirmedAt DateTime?
+  guardEligible Boolean @default(false)
+  incidentSheets IncidentSheet[]
+  driverPermissions VehicleDriverAuthorization[] @relation("DriverPerson")
+  grantedDriverPermissions VehicleDriverAuthorization[] @relation("DriverGrantor")
+  missionsDriven MissionMovement[] @relation("MissionDriver")
+  missionsLed MissionMovement[] @relation("MissionLeader")
+  missionsCreated MissionMovement[] @relation("MissionCreator")
+  missionCrew MissionCrew[]
+  courses CourseAttendance[] @relation("CourseOwner")
+  reviewedCourses CourseAttendance[] @relation("CourseReviewer")
+  receivedNotices DispatchNotice[]
   id                String    @id @default(cuid())
   username          String    @unique @db.VarChar(50)
   email             String?   @unique @db.VarChar(120)
@@ -110,6 +187,7 @@ model User {
   role              UserRole  @default(FIREFIGHTER)
   isActive          Boolean   @default(true)
   isPendingApproval Boolean   @default(false)
+  mustChangePassword Boolean  @default(false)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   deletedAt         DateTime?
@@ -131,19 +209,77 @@ model User {
   createdIncidents    Incident[]           @relation("IncidentCreatedBy")
   closedIncidents     Incident[]           @relation("IncidentClosedBy")
   incidentAssignments IncidentAssignment[]
+  incidentUpdates     IncidentUpdate[]     @relation("IncidentUpdateAuthor")
 
   createdShifts    Shift[]           @relation("ShiftCreatedBy")
   shiftAssignments ShiftAssignment[]
 
   inspectionAssignments InspectionResponsible[]
+  ledInspections         Inspection[] @relation("InspectionLeader")
+  createdInspections     Inspection[] @relation("InspectionCreatedBy")
 
   chatMessages ChatMessage[] @relation("ChatMessageAuthor")
 
   auditLogsAsActor AuditLog[] @relation("AuditActor")
+  complianceRecords ComplianceRecord[] @relation("ComplianceUser")
+  createdComplianceRecords ComplianceRecord[] @relation("ComplianceCreatedBy")
+  createdOperationalContacts OperationalContact[]
+  availabilityRecords PersonnelAvailability[] @relation("AvailabilitySubject")
+  editedAvailabilityRecords PersonnelAvailability[] @relation("AvailabilityEditor")
+  createdMaintenanceJobs MaintenanceJob[] @relation("MaintenanceCreator")
+  assignedMaintenanceJobs MaintenanceJob[] @relation("MaintenanceResponsible")
+  operationalDocuments OperationalDocument[]
+  authSessions AuthSession[]
+  equipmentHeld PersonalEquipmentIssue[] @relation("EquipmentHolder")
+  equipmentIssued PersonalEquipmentIssue[] @relation("EquipmentIssuer")
+  equipmentReceived PersonalEquipmentIssue[] @relation("EquipmentReceiver")
+  equipmentChecks PersonalEquipmentCheck[]
+  equipmentRequests PersonalEquipmentRequest[] @relation("EquipmentRequester")
+  equipmentRequestsReviewed PersonalEquipmentRequest[] @relation("EquipmentRequestReviewer")
+  airHydroTests AirHydroTest[]
+  airFillsOperated AirFill[] @relation("AirFillOperator")
+  airFillsCreated AirFill[] @relation("AirFillCreator")
+  airFillAssistance AirFillHelper[]
+  airFilterChanges AirFilterChange[]
+  workCreated WorkTask[] @relation("WorkCreator")
+  personalDeclarations PersonalDeclaration[]
+  emergencyAvailability EmergencyAvailability[]
+  chatAcknowledgements ChatAcknowledgement[]
+  notifications MemberNotification[]
+  pushSubscriptions PushSubscription[]
+  serviceParticipations ServiceParticipation[] @relation("ParticipationPerson")
+  participationsRegistered ServiceParticipation[] @relation("ParticipationRegistrar")
+  departureMemberships DepartureMember[]
+  departuresRegistered VehicleDeparture[] @relation("DepartureRegistrar")
+  controlGroups ControlGroupMember[]
+  workReviewed WorkTask[] @relation("WorkReviewer")
+  workAssignments WorkTaskMember[]
+  workEvents WorkTaskEvent[]
+  notebookEntries IncidentNotebookEntry[]
+  fuelRecords FuelRecord[]
+  waterTripsCreated WaterTrip[] @relation("WaterCreator")
+  waterTripsLed WaterTrip[] @relation("WaterLeader")
+  waterTripCrew WaterTripMember[]
 
   @@index([role])
   @@index([isActive])
   @@index([isPendingApproval])
+}
+
+model AuthSession {
+  pushSubscriptions PushSubscription[]
+  guardMode Boolean @default(false)
+  id               String @id @default(uuid())
+  userId           String
+  refreshTokenHash String @unique @db.VarChar(64)
+  userAgent        String? @db.VarChar(200)
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime @default(now())
+  createdAt        DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, expiresAt])
 }
 
 model FirefighterProfile {
@@ -232,6 +368,7 @@ model AttendanceRecord {
 }
 
 model Alert {
+  originNotice DispatchNotice?
   id               String        @id @default(cuid())
   type             AlertType
   priority         AlertPriority
@@ -248,11 +385,53 @@ model Alert {
   createdBy  User            @relation("AlertCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
   resolvedBy User?           @relation("AlertResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
   responses  AlertResponse[]
-  incidents  Incident[]
+  incident   Incident?
 
   @@index([status])
   @@index([type])
   @@index([createdAt])
+}
+
+model DispatchNotice {
+  revision Int @default(1)
+  cancelledAt DateTime?
+  cancelReason String? @db.VarChar(1000)
+  id String @id @default(cuid())
+  source String @db.VarChar(120)
+  phone String? @db.VarChar(40)
+  location String @db.VarChar(180)
+  type AlertType
+  priority AlertPriority
+  notes String @db.VarChar(2000)
+  referral String? @db.VarChar(180)
+  receivedAt DateTime @default(now())
+  operatorId String
+  alertId String? @unique
+  operator User @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  alert Alert? @relation(fields: [alertId], references: [id], onDelete: Restrict)
+  @@index([receivedAt])
+}
+
+enum CourseReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+model CourseAttendance {
+  id String @id @default(cuid())
+  userId String
+  title String @db.VarChar(160)
+  provider String @db.VarChar(160)
+  completedOn DateTime @db.Date
+  status CourseReviewStatus @default(PENDING)
+  reviewerId String?
+  reviewedAt DateTime?
+  reviewNote String? @db.VarChar(1000)
+  createdAt DateTime @default(now())
+  user User @relation("CourseOwner", fields: [userId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("CourseReviewer", fields: [reviewerId], references: [id], onDelete: Restrict)
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model AlertResponse {
@@ -260,6 +439,8 @@ model AlertResponse {
   alertId     String
   userId      String
   response    AlertResponseType
+  attendanceOutcome AlertAttendanceOutcome?
+  attendanceOutcomeAt DateTime?
   respondedAt DateTime          @default(now())
 
   alert Alert @relation(fields: [alertId], references: [id], onDelete: Cascade)
@@ -270,14 +451,24 @@ model AlertResponse {
 }
 
 model Incident {
+  voidedAt DateTime?
+  voidReason String? @db.VarChar(2000)
+  replacesIncidentId String? @unique
+  replaces Incident? @relation("IncidentReplacement", fields: [replacesIncidentId], references: [id], onDelete: Restrict)
+  replacement Incident? @relation("IncidentReplacement")
+  sheet IncidentSheet?
+  movements MissionMovement[]
   id              String         @id @default(cuid())
-  alertId         String?
+  alertId         String?        @unique
   title           String         @db.VarChar(140)
   type            AlertType
   description     String         @db.Text
+  location        String         @db.VarChar(180)
   status          IncidentStatus @default(OPEN)
   occurredAt      DateTime       @default(now())
+  responseTimeMinutes Int?
   losses          String?        @db.Text
+  closingReport   String?        @db.Text
   createdByUserId String
   closedByUserId  String?
   closedAt        DateTime?
@@ -288,12 +479,33 @@ model Incident {
   createdBy   User                 @relation("IncidentCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
   closedBy    User?                @relation("IncidentClosedBy", fields: [closedByUserId], references: [id], onDelete: SetNull)
   assignments IncidentAssignment[]
+  vehicles    IncidentVehicle[]
+  serviceParticipations ServiceParticipation[]
+  updates     IncidentUpdate[]
+  documents   OperationalDocument[]
+  notebookEntries IncidentNotebookEntry[]
 
-  @@index([alertId])
   @@index([status])
   @@index([occurredAt])
 }
 
+model IncidentSheet {
+  incidentId String @id
+  authorId String
+  callerName String @default("") @db.VarChar(120)
+  callerPhone String @default("") @db.VarChar(40)
+  notes String @db.VarChar(4000)
+  baseUserIds String[]
+  materials Json
+  evidenceUrls String[]
+  revision Int @default(1)
+  finalizedAt DateTime?
+  finalContext Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  incident Incident @relation(fields:[incidentId], references:[id], onDelete:Restrict)
+  author User @relation(fields:[authorId], references:[id], onDelete:Restrict)
+}
 model IncidentAssignment {
   id         String   @id @default(cuid())
   incidentId String
@@ -313,6 +525,7 @@ model Shift {
   startTime       String   @db.VarChar(5)
   endTime         String   @db.VarChar(5)
   shiftType       String   @db.VarChar(60)
+  period          ShiftPeriod?
   notes           String?  @db.Text
   createdByUserId String
   createdAt       DateTime @default(now())
@@ -320,8 +533,12 @@ model Shift {
 
   createdBy   User              @relation("ShiftCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
   assignments ShiftAssignment[]
+  documents OperationalDocument[]
+  serviceParticipations ServiceParticipation[]
+  swapRequests ShiftSwapRequest[]
 
   @@index([date])
+  @@unique([date, period])
 }
 
 model ShiftAssignment {
@@ -348,6 +565,7 @@ model ChatMessage {
   updatedAt    DateTime  @updatedAt
 
   author User @relation("ChatMessageAuthor", fields: [authorUserId], references: [id], onDelete: Cascade)
+  acknowledgements ChatAcknowledgement[]
 
   @@index([createdAt])
   @@index([authorUserId])
@@ -356,6 +574,8 @@ model ChatMessage {
 }
 
 model Asset {
+  driverAuthorizations VehicleDriverAuthorization[]
+  missions MissionMovement[]
   id            String      @id @default(cuid())
   name          String      @db.VarChar(140)
   assetType     AssetType
@@ -367,12 +587,82 @@ model Asset {
   deletedAt     DateTime?
 
   vehicle Vehicle?
+  complianceRecords ComplianceRecord[]
+  incidentAssignments IncidentVehicle[]
+  maintenanceJobs MaintenanceJob[]
+  personalEquipment PersonalEquipment?
+  airCylinder AirCylinder? @relation("AirCylinderAsset")
+  locatedAirCylinders AirCylinder[] @relation("AirCylinderLocation")
+  airCompressor AirCompressor?
+  fuelRecords FuelRecord[]
+  waterTrips WaterTrip[]
+  departures VehicleDeparture[]
 
   @@index([assetType])
   @@index([status])
 }
 
+model IncidentVehicle {
+  id         String   @id @default(cuid())
+  incidentId String
+  assetId    String
+  assignedAt DateTime @default(now())
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  asset    Asset    @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([incidentId, assetId])
+  @@index([assetId])
+}
+
+model IncidentUpdate {
+  id           String    @id @default(cuid())
+  incidentId   String
+  authorUserId String
+  body         String    @db.Text
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  author   User     @relation("IncidentUpdateAuthor", fields: [authorUserId], references: [id], onDelete: Restrict)
+
+  @@index([incidentId, createdAt])
+  @@index([authorUserId])
+  @@index([deletedAt])
+}
+
+model ComplianceRecord {
+  id              String                @id @default(cuid())
+  subjectType     ComplianceSubjectType
+  userId          String?
+  assetId         String?
+  category        ComplianceCategory
+  title           String                @db.VarChar(140)
+  issuer          String?               @db.VarChar(140)
+  issuedAt        DateTime?
+  expiresAt       DateTime?
+  warningDays     Int                   @default(30)
+  documentUrl     String?               @db.VarChar(500)
+  notes           String?               @db.Text
+  createdByUserId String
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  deletedAt       DateTime?
+
+  user      User?  @relation("ComplianceUser", fields: [userId], references: [id], onDelete: Cascade)
+  asset     Asset? @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  createdBy User   @relation("ComplianceCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([subjectType, category])
+  @@index([userId])
+  @@index([assetId])
+  @@index([expiresAt])
+  @@index([deletedAt])
+}
+
 model Vehicle {
+  controlDrafts ControlDraft[]
+  kind String @default("UNCLASSIFIED") @db.VarChar(30)
   id                   String   @id @default(cuid())
   assetId              String   @unique
   unitNumber           String   @unique @db.VarChar(20)
@@ -389,6 +679,7 @@ model Vehicle {
 }
 
 model VehicleCompartment {
+  revision    Int @default(1)
   id          String   @id @default(cuid())
   vehicleId   String
   name        String   @db.VarChar(120)
@@ -405,6 +696,9 @@ model VehicleCompartment {
 }
 
 model VehicleInventoryItem {
+  revision         Int @default(1)
+  labelCode        String? @unique @db.VarChar(40)
+  expiresOn        DateTime? @db.Date
   id               String             @id @default(cuid())
   compartmentId    String
   name             String             @db.VarChar(140)
@@ -423,12 +717,24 @@ model VehicleInventoryItem {
 
 
 model Inspection {
+  draftId String? @unique
+  draft ControlDraft? @relation(fields:[draftId],references:[id],onDelete:Restrict)
+  confirmationsComplete Boolean @default(true)
+  repairTaskId String? @unique
+  repairTask WorkTask? @relation("InspectionRepair", fields: [repairTaskId], references: [id], onDelete: Restrict)
+  revision         Int @default(1)
+  amendment        String? @db.Text
+  voidedAt         DateTime?
+  voidReason       String? @db.VarChar(2000)
   id               String     @id @default(cuid())
   vehicleId        String
   incidentType     AlertType?
   inspectionDate   DateTime
   inspectionTime   String?    @db.VarChar(5)
   observations     String?    @db.Text
+  leaderUserId     String?
+  createdByUserId  String?
+  resultingAssetStatus AssetStatus?
   summaryOk        Int        @default(0)
   summaryMissing   Int        @default(0)
   summaryDamaged   Int        @default(0)
@@ -437,19 +743,26 @@ model Inspection {
   updatedAt        DateTime   @updatedAt
 
   vehicle      Vehicle                 @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  leader       User?                   @relation("InspectionLeader", fields: [leaderUserId], references: [id], onDelete: SetNull)
+  createdBy    User?                   @relation("InspectionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   responsibles InspectionResponsible[]
   items        InspectionItem[]
 
   @@index([vehicleId])
   @@index([inspectionDate])
+  @@index([leaderUserId])
+  @@index([createdByUserId])
 }
 
 
 model InspectionItem {
+  foundElsewhere   Boolean @default(false)
+  foundLocation    String? @db.VarChar(200)
   id               String               @id @default(cuid())
   inspectionId     String
   inventoryItemId  String
   expectedQuantity Int                  @default(1)
+  observedQuantity Int                  @default(0)
   result           InspectionItemResult @default(UNCHECKED)
   observations     String?              @db.Text
   createdAt        DateTime             @default(now())
@@ -462,6 +775,8 @@ model InspectionItem {
 }
 
 model InspectionResponsible {
+  participatedAt DateTime?
+  confirmedAt DateTime?
   id           String   @id @default(cuid())
   inspectionId String
   userId       String
@@ -488,6 +803,755 @@ model AuditLog {
   @@index([actorUserId])
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+model PersonnelAvailability {
+  id              String @id @default(cuid())
+  userId          String
+  date            DateTime @db.Date
+  period          ShiftPeriod
+  status          AvailabilityStatus
+  notes           String? @db.VarChar(1000)
+  revision        Int @default(1)
+  editedByUserId  String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation("AvailabilitySubject", fields: [userId], references: [id], onDelete: Cascade)
+  editedBy User @relation("AvailabilityEditor", fields: [editedByUserId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, date, period])
+  @@index([date, period, status])
+}
+
+model MaintenanceJob {
+  publicTask WorkTask?
+  id                String @id @default(cuid())
+  assetId           String
+  title             String @db.VarChar(140)
+  description       String @db.Text
+  status            MaintenanceStatus @default(OPEN)
+  blocksOperation   Boolean @default(true)
+  dueAt             DateTime? @db.Date
+  responsibleUserId String?
+  resolution        String? @db.Text
+  costCents         Int?
+  resolvedAt        DateTime?
+  revision          Int @default(1)
+  createdByUserId   String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  createdBy User @relation("MaintenanceCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  responsible User? @relation("MaintenanceResponsible", fields: [responsibleUserId], references: [id], onDelete: SetNull)
+
+  @@index([assetId, status])
+  @@index([status, dueAt])
+}
+
+model OperationalDocument {
+  sourceDocumentId String?
+  sourceDocument OperationalDocument? @relation("DocumentRectification", fields: [sourceDocumentId], references: [id], onDelete: Restrict)
+  rectifications OperationalDocument[] @relation("DocumentRectification")
+  id                String @id @default(cuid())
+  kind              DocumentKind
+  status            DocumentStatus @default(DRAFT)
+  title             String @db.VarChar(160)
+  category          String @db.VarChar(80)
+  body              String @db.Text
+  externalUrl       String? @db.VarChar(500)
+  shiftId           String?
+  incidentId        String?
+  publicationContext Json?
+  revision          Int @default(1)
+  publishedAt       DateTime?
+  createdByUserId   String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  createdBy User @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  shift Shift? @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  incident Incident? @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+
+  @@index([kind, status])
+  @@index([shiftId])
+  @@index([incidentId])
+}
+
+model OperationalContact {
+  id              String   @id @default(cuid())
+  name            String   @db.VarChar(140)
+  category        String   @db.VarChar(80)
+  phone           String?  @db.VarChar(40)
+  radioFrequency  String?  @db.VarChar(80)
+  email           String?  @db.VarChar(120)
+  address         String?  @db.VarChar(200)
+  notes           String?  @db.Text
+  isEmergency     Boolean  @default(false)
+  revision        Int      @default(1)
+  createdByUserId String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deletedAt       DateTime?
+
+  createdBy User @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([deletedAt, category])
+  @@index([isEmergency, name])
+}
+
+enum EquipmentCondition {
+  OK
+  REVIEW
+  OUT
+}
+
+model PersonalEquipment {
+  id String @id @default(cuid())
+  assetId String @unique
+  code String @unique @db.VarChar(40)
+  category String @db.VarChar(40)
+  size String? @db.VarChar(30)
+  revision Int @default(1)
+  archivedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  issues PersonalEquipmentIssue[]
+  checks PersonalEquipmentCheck[]
+  @@index([archivedAt, category])
+}
+
+model PersonalEquipmentIssue {
+  id String @id @default(cuid())
+  equipmentId String
+  userId String
+  issuedByUserId String
+  receivedByUserId String?
+  issuedAt DateTime @default(now())
+  returnedAt DateTime?
+  holderAcceptedAt DateTime?
+  issueNotes String? @db.VarChar(2000)
+  returnNotes String? @db.VarChar(2000)
+  returnCondition EquipmentCondition?
+  equipment PersonalEquipment @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  user User @relation("EquipmentHolder", fields: [userId], references: [id], onDelete: Restrict)
+  issuedBy User @relation("EquipmentIssuer", fields: [issuedByUserId], references: [id], onDelete: Restrict)
+  receivedBy User? @relation("EquipmentReceiver", fields: [receivedByUserId], references: [id], onDelete: Restrict)
+  fulfilledRequest PersonalEquipmentRequest?
+  @@index([userId, returnedAt])
+  @@index([equipmentId, issuedAt])
+}
+
+enum EquipmentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  FULFILLED
+  CANCELLED
+}
+
+model PersonalEquipmentRequest {
+  id String @id @default(cuid())
+  userId String
+  category String @db.VarChar(40)
+  size String? @db.VarChar(30)
+  reason String @db.VarChar(2000)
+  status EquipmentRequestStatus @default(PENDING)
+  revision Int @default(1)
+  reviewedByUserId String?
+  reviewedAt DateTime?
+  reviewNotes String? @db.VarChar(2000)
+  fulfilledIssueId String? @unique
+  fulfilledAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation("EquipmentRequester", fields: [userId], references: [id], onDelete: Restrict)
+  reviewedBy User? @relation("EquipmentRequestReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  fulfilledIssue PersonalEquipmentIssue? @relation(fields: [fulfilledIssueId], references: [id], onDelete: Restrict)
+  @@index([userId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model PersonalEquipmentCheck {
+  id String @id @default(cuid())
+  equipmentId String
+  checkedByUserId String
+  condition EquipmentCondition
+  notes String @db.VarChar(2000)
+  checkedAt DateTime @default(now())
+  equipment PersonalEquipment @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  checkedBy User @relation(fields: [checkedByUserId], references: [id], onDelete: Restrict)
+  @@index([equipmentId, checkedAt])
+}
+
+model AirCylinder {
+  id String @id @default(cuid())
+  assetId String @unique
+  code String @unique @db.VarChar(40)
+  serialNumber String @unique @db.VarChar(100)
+  ratedPressureBar Int
+  pressureBar Int?
+  vehicleAssetId String?
+  externalOwner String? @db.VarChar(140)
+  revision Int @default(1)
+  reviewedAt DateTime?
+  lastEventAt DateTime @default(now())
+  retiredAt DateTime?
+  createdAt DateTime @default(now())
+  asset Asset @relation("AirCylinderAsset", fields: [assetId], references: [id], onDelete: Restrict)
+  vehicle Asset? @relation("AirCylinderLocation", fields: [vehicleAssetId], references: [id], onDelete: Restrict)
+  hydroTests AirHydroTest[]
+  fillItems AirFillItem[]
+}
+
+model AirHydroTest {
+  id String @id @default(cuid())
+  cylinderId String
+  result String @db.VarChar(10)
+  testedOn DateTime @db.Date
+  validUntil DateTime? @db.Date
+  certificateReference String @db.VarChar(200)
+  notes String @db.VarChar(2000)
+  registeredByUserId String
+  createdAt DateTime @default(now())
+  cylinder AirCylinder @relation(fields: [cylinderId], references: [id], onDelete: Restrict)
+  registeredBy User @relation(fields: [registeredByUserId], references: [id], onDelete: Restrict)
+  @@unique([cylinderId, certificateReference])
+  @@index([cylinderId, testedOn, createdAt])
+}
+
+model AirCompressor {
+  id String @id @default(cuid())
+  assetId String @unique
+  code String @unique @db.VarChar(40)
+  maxPressureBar Int
+  totalRunMinutes Int @default(0)
+  filterBaselineMinutes Int @default(0)
+  filterLifeMinutes Int
+  filterReference String @db.VarChar(200)
+  filterInstalledAt DateTime
+  airQualityReference String? @db.VarChar(200)
+  airQualityValidUntil DateTime? @db.Date
+  reviewedAt DateTime?
+  lastRunEndedAt DateTime?
+  retiredAt DateTime?
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  fills AirFill[]
+  filterChanges AirFilterChange[]
+}
+
+model AirFill {
+  id String @id @default(cuid())
+  operationKey String @unique @db.VarChar(36)
+  requestHash String @db.VarChar(64)
+  compressorId String
+  startedAt DateTime
+  endedAt DateTime
+  runMinutes Int
+  operatorUserId String
+  createdByUserId String
+  reason String @db.VarChar(40)
+  notes String @db.VarChar(2000)
+  compressorSnapshot Json
+  createdAt DateTime @default(now())
+  compressor AirCompressor @relation(fields: [compressorId], references: [id], onDelete: Restrict)
+  operator User @relation("AirFillOperator", fields: [operatorUserId], references: [id], onDelete: Restrict)
+  createdBy User @relation("AirFillCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  items AirFillItem[]
+  helpers AirFillHelper[]
+  @@index([compressorId, startedAt])
+}
+
+model AirFillItem {
+  id String @id @default(cuid())
+  fillId String
+  cylinderId String
+  pressureBar Int
+  previousPressureBar Int?
+  cylinderSnapshot Json
+  fill AirFill @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  cylinder AirCylinder @relation(fields: [cylinderId], references: [id], onDelete: Restrict)
+  @@unique([fillId, cylinderId])
+  @@index([cylinderId])
+}
+
+model AirFillHelper {
+  fillId String
+  userId String
+  fill AirFill @relation(fields: [fillId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([fillId, userId])
+}
+
+model AirFilterChange {
+  id String @id @default(cuid())
+  compressorId String
+  totalMinutesSnapshot Int
+  previousBaselineMinutes Int
+  previousLifeMinutes Int
+  previousReference String @db.VarChar(200)
+  newLifeMinutes Int
+  newReference String @db.VarChar(200)
+  notes String @db.VarChar(2000)
+  changedByUserId String
+  changedAt DateTime @default(now())
+  compressor AirCompressor @relation(fields: [compressorId], references: [id], onDelete: Restrict)
+  changedBy User @relation(fields: [changedByUserId], references: [id], onDelete: Restrict)
+  @@index([compressorId, changedAt])
+}
+
+enum WorkTaskStatus {
+  ASSIGNED
+  SUBMITTED
+  RETURNED
+  VERIFIED
+  CANCELLED
+}
+
+model WorkTask {
+  requiresPresence Boolean @default(true)
+  transfers WorkTaskTransfer[]
+  officerApproved Boolean @default(false)
+  rankingRecoveryKey String? @unique @db.VarChar(160)
+  priority String @default("NORMAL") @db.VarChar(16)
+  originInspection Inspection? @relation("InspectionRepair")
+  maintenanceJobId String? @unique
+  maintenanceJob MaintenanceJob? @relation(fields: [maintenanceJobId], references: [id], onDelete: Restrict)
+  photos WorkPhoto[]
+  id String @id @default(cuid())
+  title String @db.VarChar(160)
+  description String @db.VarChar(4000)
+  dueOn DateTime? @db.Date
+  status WorkTaskStatus @default(ASSIGNED)
+  isSelfReported Boolean @default(false)
+  completionNotes String? @db.VarChar(4000)
+  evidenceUrls Json?
+  completedAt DateTime?
+  reviewedByUserId String?
+  reviewedAt DateTime?
+  reviewNotes String? @db.VarChar(2000)
+  createdByUserId String
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy User @relation("WorkCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  reviewedBy User? @relation("WorkReviewer", fields: [reviewedByUserId], references: [id], onDelete: Restrict)
+  members WorkTaskMember[]
+  events WorkTaskEvent[]
+  @@index([status, dueOn])
+}
+
+model RankingPolicy {
+  id String @id @default("main")
+  revision Int @default(1)
+  config Json
+  updatedAt DateTime @updatedAt
+}
+
+model ExpenseClaim {
+  receiptBytes Bytes?
+  receiptSha256 String? @db.VarChar(64)
+  officerExpense Boolean @default(false)
+  approvals ExpenseApproval[]
+  user User @relation(fields:[userId],references:[id],onDelete:Restrict)
+  id String @id @default(cuid())
+  operationKey String @unique @db.VarChar(36)
+  userId String
+  title String @db.VarChar(160)
+  notes String @db.VarChar(2000)
+  receiptUrl String? @db.VarChar(500)
+  occurredOn DateTime @db.Date
+  amountCents Int
+  status String @default("PENDING") @db.VarChar(16)
+  reviewNote String? @db.VarChar(1000)
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  payments ExpensePayment[]
+  @@index([status, createdAt])
+}
+
+model ExpensePayment {
+  id String @id @default(cuid())
+  operationKey String @unique @db.VarChar(36)
+  claimId String
+  amountCents Int
+  reference String @db.VarChar(500)
+  reversedAt DateTime?
+  createdAt DateTime @default(now())
+  claim ExpenseClaim @relation(fields:[claimId],references:[id],onDelete:Restrict)
+}
+
+model ControlDraft {
+  id String @id @default(cuid())
+  ownerId String
+  vehicleId String
+  startedAt DateTime @default(now())
+  closedAt DateTime?
+  revision Int @default(1)
+  participants Json
+  owner User @relation(fields:[ownerId],references:[id],onDelete:Restrict)
+  vehicle Vehicle @relation(fields:[vehicleId],references:[id],onDelete:Restrict)
+  inspection Inspection?
+  @@index([ownerId,closedAt])
+}
+
+model ExpenseApproval {
+  id String @id @default(cuid())
+  claimId String
+  userId String
+  rankSnapshot String @db.VarChar(80)
+  decision String @db.VarChar(16)
+  note String @db.VarChar(1000)
+  createdAt DateTime @default(now())
+  claim ExpenseClaim @relation(fields:[claimId],references:[id],onDelete:Restrict)
+  user User @relation(fields:[userId],references:[id],onDelete:Restrict)
+  @@unique([claimId,userId])
+}
+
+model RankingTemplate {
+  id String @id @default(cuid())
+  title String @db.VarChar(160)
+  description String @db.VarChar(4000)
+  active Boolean @default(true)
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+}
+
+model WorkTaskMember {
+  taskId String
+  userId String
+  declinedAt DateTime?
+  task WorkTask @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([taskId, userId])
+  @@index([userId])
+}
+
+model WorkPhoto {
+  id String @id @default(cuid())
+  taskId String
+  submissionRevision Int
+  bytes Bytes
+  sha256 String @db.VarChar(64)
+  createdAt DateTime @default(now())
+  task WorkTask @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  @@index([taskId, submissionRevision])
+}
+
+model WorkTaskEvent {
+  id String @id @default(cuid())
+  taskId String
+  actorUserId String
+  action String @db.VarChar(40)
+  notes String @db.VarChar(4000)
+  createdAt DateTime @default(now())
+  task WorkTask @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  actor User @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  @@index([taskId, createdAt])
+}
+
+model IncidentNotebookEntry {
+  id String @id @default(cuid())
+  incidentId String
+  category String @db.VarChar(20)
+  title String @db.VarChar(160)
+  body String @db.VarChar(4000)
+  occurredAt DateTime
+  authorUserId String
+  revision Int @default(1)
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  author User @relation(fields: [authorUserId], references: [id], onDelete: Restrict)
+  @@index([incidentId, deletedAt, occurredAt])
+}
+
+model FuelRecord {
+  revision Int @default(1)
+  replacesId String? @unique
+  replaces FuelRecord? @relation("FuelCorrection",fields:[replacesId],references:[id],onDelete:Restrict)
+  replacement FuelRecord? @relation("FuelCorrection")
+  correctionReason String? @db.VarChar(1000)
+  id String @id @default(cuid())
+  operationKey String @unique @db.VarChar(36)
+  requestHash String @db.VarChar(64)
+  assetId String
+  occurredAt DateTime
+  volumeMilliliters Int
+  costCents Int?
+  odometer Int?
+  reason String @db.VarChar(40)
+  notes String @db.VarChar(2000)
+  createdByUserId String
+  voidedAt DateTime?
+  voidReason String? @db.VarChar(2000)
+  createdAt DateTime @default(now())
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  createdBy User @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  @@index([assetId, occurredAt])
+}
+
+model WaterTrip {
+  earningsApprovedAt DateTime?
+  earningsApprovedById String?
+  earningsApprovalNote String? @db.VarChar(1000)
+  earningsApprovedBy User? @relation("WaterEarningsReviewer",fields:[earningsApprovedById],references:[id],onDelete:Restrict)
+  replacesId String? @unique
+  replaces WaterTrip? @relation("WaterCorrection",fields:[replacesId],references:[id],onDelete:Restrict)
+  replacement WaterTrip? @relation("WaterCorrection")
+  correctionReason String? @db.VarChar(1000)
+  id String @id @default(cuid())
+  operationKey String @unique @db.VarChar(36)
+  requestHash String @db.VarChar(64)
+  assetId String
+  customer String @db.VarChar(160)
+  destination String @db.VarChar(200)
+  departedAt DateTime
+  returnedAt DateTime
+  startOdometer Int
+  endOdometer Int
+  tripCount Int
+  chargeCents Int
+  clientPaidAt DateTime?
+  leaderUserId String
+  createdByUserId String
+  notes String @db.VarChar(2000)
+  revision Int @default(1)
+  voidedAt DateTime?
+  voidReason String? @db.VarChar(2000)
+  createdAt DateTime @default(now())
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  leader User @relation("WaterLeader", fields: [leaderUserId], references: [id], onDelete: Restrict)
+  createdBy User @relation("WaterCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  crew WaterTripMember[]
+  @@index([assetId, departedAt])
+}
+
+model WaterTripMember {
+  tripId String
+  userId String
+  compensationCents Int
+  paidAt DateTime?
+  trip WaterTrip @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([tripId, userId])
+  @@index([userId])
+}
+
+model PersonalDeclaration {
+  driverAuthorizations VehicleDriverAuthorization[]
+  clothingBrand String? @db.VarChar(120)
+  clothingModel String? @db.VarChar(120)
+  clothingSize String? @db.VarChar(40)
+  clothingCondition String? @db.VarChar(20)
+  clothingNovelties String? @db.VarChar(2000)
+  id String @id @default(cuid())
+  userId String
+  category String @db.VarChar(30)
+  title String @db.VarChar(160)
+  details String @db.VarChar(4000)
+  licenseNumber String? @db.VarChar(80)
+  issuer String? @db.VarChar(160)
+  licenseClasses String[] @default([])
+  issuedOn DateTime? @db.Date
+  expiresOn DateTime? @db.Date
+  revision Int @default(1)
+  deletedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([userId, category, deletedAt])
+}
+
+model EmergencyAvailability {
+  id String @id @default(cuid())
+  userId String
+  startsAt DateTime
+  endsAt DateTime?
+  cancelledAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([userId, startsAt, endsAt])
+}
+
+model ChatAcknowledgement {
+  id String @id @default(cuid())
+  messageId String
+  userId String
+  contentHash String @db.VarChar(64)
+  bodySnapshot String @db.VarChar(4000)
+  acknowledgedAt DateTime @default(now())
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@unique([messageId, userId, contentHash])
+}
+
+model MemberNotification {
+  pushQueuedAt DateTime?
+  pushDeliveries PushDelivery[]
+  body String? @db.VarChar(2000)
+  id String @id @default(cuid())
+  userId String
+  title String @db.VarChar(160)
+  href String @db.VarChar(200)
+  dedupeKey String? @unique @db.VarChar(200)
+  readAt DateTime?
+  createdAt DateTime @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@index([userId, readAt, createdAt])
+  @@index([pushQueuedAt, createdAt])
+}
+
+model PushSubscription {
+  id String @id @default(cuid())
+  userId String
+  sessionId String
+  endpointHash String @unique @db.VarChar(64)
+  endpoint String @db.VarChar(2048)
+  p256dh String @db.VarChar(100)
+  auth String @db.VarChar(50)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  deliveries PushDelivery[]
+  @@index([userId, sessionId])
+}
+
+model PushDelivery {
+  id String @id @default(cuid())
+  notificationId String
+  subscriptionId String
+  attempts Int @default(0)
+  nextAttemptAt DateTime @default(now())
+  leaseUntil DateTime?
+  finishedAt DateTime?
+  deliveredAt DateTime?
+  errorCode String? @db.VarChar(40)
+  createdAt DateTime @default(now())
+  notification MemberNotification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  subscription PushSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  @@unique([notificationId, subscriptionId])
+  @@index([finishedAt, nextAttemptAt, leaseUntil])
+}
+
+model ControlGroup {
+  id String @id @default(cuid())
+  name String @db.VarChar(100)
+  startsOn DateTime @db.Date
+  repeatWeeks Int @default(4)
+  revision Int @default(1)
+  members ControlGroupMember[]
+}
+model ControlGroupMember {
+  groupId String
+  userId String @unique
+  group ControlGroup @relation(fields: [groupId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([groupId, userId])
+}
+
+model ServiceParticipation {
+  verifiedAt DateTime?
+  id String @id @default(cuid())
+  userId String
+  shiftId String?
+  incidentId String?
+  startedAt DateTime
+  endedAt DateTime
+  notes String @db.VarChar(2000)
+  registeredByUserId String
+  revision Int @default(1)
+  cancelledAt DateTime?
+  cancelReason String? @db.VarChar(2000)
+  createdAt DateTime @default(now())
+  user User @relation("ParticipationPerson", fields: [userId], references: [id], onDelete: Restrict)
+  registeredBy User @relation("ParticipationRegistrar", fields: [registeredByUserId], references: [id], onDelete: Restrict)
+  shift Shift? @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  incident Incident? @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  @@index([userId, startedAt])
+}
+
+model VehicleDeparture {
+  mission MissionMovement?
+  id String @id @default(cuid())
+  operationKey String @unique @db.Uuid
+  requestHash String @db.VarChar(64)
+  assetId String
+  departedAt DateTime
+  returnedAt DateTime
+  purpose String @db.VarChar(200)
+  notes String @db.VarChar(2000)
+  createdByUserId String
+  createdAt DateTime @default(now())
+  revision Int @default(1)
+  voidedAt DateTime?
+  voidReason String? @db.VarChar(2000)
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  createdBy User @relation("DepartureRegistrar", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  crew DepartureMember[]
+  @@index([assetId, departedAt])
+}
+model VehicleDriverAuthorization {
+  licenseId String?
+  licenseRevision Int?
+  license PersonalDeclaration? @relation(fields:[licenseId],references:[id],onDelete:Restrict)
+  user User @relation("DriverPerson", fields: [userId], references: [id], onDelete: Restrict)
+  grantedBy User @relation("DriverGrantor", fields: [grantedByUserId], references: [id], onDelete: Restrict)
+  assetId String
+  userId String
+  requiredClass String @db.VarChar(12)
+  validUntil DateTime @db.Date
+  grantedByUserId String
+  reason String @db.VarChar(1000)
+  revision Int @default(1)
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  @@id([assetId,userId])
+}
+model MissionMovement {
+  returnWithoutArrivalReason String? @db.VarChar(1000)
+  dispatchExceptionReason String? @db.VarChar(1000)
+  driver User @relation("MissionDriver", fields: [driverUserId], references: [id], onDelete: Restrict)
+  leader User @relation("MissionLeader", fields: [leaderUserId], references: [id], onDelete: Restrict)
+  createdBy User @relation("MissionCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  departure VehicleDeparture? @relation(fields: [departureId], references: [id], onDelete: Restrict)
+  id String @id @default(cuid())
+  incidentId String
+  assetId String
+  driverUserId String
+  leaderUserId String
+  createdByUserId String
+  departedAt DateTime @default(now())
+  arrivedAt DateTime?
+  returnedAt DateTime?
+  departureId String? @unique
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  crew MissionCrew[]
+  @@index([incidentId,departedAt])
+  @@index([assetId,returnedAt])
+}
+model MissionCrew {
+  movementId String
+  userId String
+  movement MissionMovement @relation(fields: [movementId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([movementId,userId])
+  @@index([userId])
+}
+model DepartureMember {
+  departureId String
+  userId String
+  isLeader Boolean @default(false)
+  departure VehicleDeparture @relation(fields: [departureId], references: [id], onDelete: Restrict)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([departureId, userId])
+  @@index([userId])
 }
 
 model Station {
@@ -534,6 +1598,12 @@ model TrustedDevice {
 }
 
 model Attendance {
+  discardedAt DateTime?
+  discardReason String? @db.VarChar(200)
+  corrections AttendanceCorrection[]
+  promptShownAt DateTime?
+  promptDueAt DateTime?
+  presenceResumeAt DateTime?
   id            String           @id @default(cuid())
   userId        String
   stationId     String
@@ -543,6 +1613,7 @@ model Attendance {
   checkOutAt DateTime?
 
   workedMinutes Int?
+  lastPresenceConfirmedAt DateTime?
   
   checkInTrust  AttendanceTrustLevel?
   checkOutTrust AttendanceTrustLevel?
@@ -571,4 +1642,59 @@ model Attendance {
 
   @@index([userId, status])
   @@index([stationId, createdAt])
+}
+
+model AttendanceCorrection {
+  id String @id @default(cuid())
+  attendanceId String
+  action String @db.VarChar(16)
+  effectiveAt DateTime
+  reason String @db.VarChar(2000)
+  status String @default("PENDING") @db.VarChar(16)
+  requestedByUserId String
+  decidedByUserId String?
+  decisionNote String? @db.VarChar(1000)
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  attendance Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  requestedBy User @relation("CorrectionRequester", fields: [requestedByUserId], references: [id], onDelete: Restrict)
+  decidedBy User? @relation("CorrectionApprover", fields: [decidedByUserId], references: [id], onDelete: Restrict)
+  @@index([status, createdAt])
+  @@index([attendanceId])
+}
+
+model WorkTaskTransfer {
+  id String @id @default(cuid())
+  taskId String
+  fromUserId String
+  toUserId String
+  notes String @db.VarChar(1000)
+  status String @default("PENDING") @db.VarChar(16)
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+  task WorkTask @relation(fields: [taskId], references: [id], onDelete: Restrict)
+  from User @relation("TransferFrom", fields: [fromUserId], references: [id], onDelete: Restrict)
+  to User @relation("TransferTo", fields: [toUserId], references: [id], onDelete: Restrict)
+  @@index([toUserId, status])
+  @@index([taskId, status])
+}
+
+model ShiftSwapRequest {
+  id String @id @default(cuid())
+  shiftId String
+  fromUserId String
+  toUserId String
+  reason String @db.VarChar(1000)
+  status String @default("PENDING") @db.VarChar(16)
+  acceptedAt DateTime?
+  decidedByUserId String?
+  decisionNote String? @db.VarChar(1000)
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  from User @relation("SwapFrom", fields: [fromUserId], references: [id], onDelete: Restrict)
+  to User @relation("SwapTo", fields: [toUserId], references: [id], onDelete: Restrict)
+  decidedBy User? @relation("SwapDecider", fields: [decidedByUserId], references: [id], onDelete: Restrict)
+  @@index([shiftId, status])
+  @@index([toUserId, status])
 }

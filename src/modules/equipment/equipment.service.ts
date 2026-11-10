@@ -1,586 +1,110 @@
+import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
+import { serializable } from "../../utils/transaction";
+import { OperationError } from "../operations/operations.schemas";
+import { createCompartmentSchema, createInventoryItemSchema, updateInventoryItemSchema, compartmentOrderSchema } from "./equipment.schemas";
+import { inventoryTemplates } from "./inventory-templates";
 
-function normalizeNullable(value?: string | null) {
-  if (value === undefined || value === null || value === "") return null;
-  return value;
+async function activeVehicle(tx: Prisma.TransactionClient, id: string) {
+  const row = await tx.vehicle.findFirst({ where: { id, asset: { deletedAt: null } } });
+  if (!row) throw new OperationError(404, "Movil no encontrado");
+  return row;
 }
-
-function inventoryStateForResult(
-  result: "OK" | "MISSING" | "DAMAGED" | "UNCHECKED",
-) {
-  if (result === "OK") return "OK";
-  if (result === "MISSING") return "OUT";
-  return "REVIEW";
+async function audit(tx: Prisma.TransactionClient, actorUserId: string | undefined, action: string, entityId: string, metadata: object) {
+  await tx.auditLog.create({ data: { actorUserId: actorUserId || null, action, entityType: "VehicleInventory", entityId, metadata: JSON.parse(JSON.stringify(metadata)) } });
 }
-
-function vehicleStatusForInspection(summary: {
-  summaryMissing: number;
-  summaryDamaged: number;
-  summaryUnchecked: number;
-}) {
-  if (
-    summary.summaryMissing > 0 ||
-    summary.summaryDamaged > 0 ||
-    summary.summaryUnchecked > 0
-  ) {
-    return "MAINTENANCE";
-  }
-
-  return "OPERATIONAL";
+export async function createCompartment(vehicleId: string, data: z.infer<typeof createCompartmentSchema>, actorUserId?: string) {
+  return serializable(async (tx) => {
+    await activeVehicle(tx, vehicleId);
+    if (await tx.vehicleCompartment.findFirst({ where: { vehicleId, name: { equals: data.name, mode: "insensitive" } } })) throw new OperationError(409, "Ya existe una baulera con ese nombre");
+    if (await tx.vehicleCompartment.count({ where: { vehicleId } }) >= 100) throw new OperationError(400, "Limite de 100 compartimentos por movil");
+    const last = await tx.vehicleCompartment.aggregate({ where: { vehicleId }, _max: { sortOrder: true } });
+    const row = await tx.vehicleCompartment.create({ data: { ...data, vehicleId, sortOrder: data.sortOrder ?? (last._max.sortOrder ?? -1) + 1 } });
+    await audit(tx, actorUserId, "VEHICLE_COMPARTMENT_CREATED", row.id, { vehicleId, after: row }); return row;
+  });
 }
-
-export async function createCompartment(
-  vehicleId: string,
-  data: {
-    name: string;
-    description?: string | null;
-    sortOrder?: number;
-  },
-  actorUserId?: string,
-) {
-  const vehicle = await prisma.vehicle.findUnique({
-    where: { id: vehicleId },
+export async function renameCompartment(id: string, name: string, revision: number, actorUserId: string) {
+  return serializable(async (tx) => {
+    const before = await tx.vehicleCompartment.findUnique({ where: { id } });
+    if (!before) throw new OperationError(404, "Baulera no encontrada");
+    await activeVehicle(tx, before.vehicleId);
+    if (await tx.vehicleCompartment.findFirst({ where: { vehicleId: before.vehicleId, id: { not: id }, name: { equals: name, mode: "insensitive" } } })) throw new OperationError(409, "Nombre de baulera repetido");
+    if (!(await tx.vehicleCompartment.updateMany({ where: { id, revision }, data: { name, revision: { increment: 1 } } })).count) throw new OperationError(409, "La baulera cambio; recargue antes de editar");
+    await audit(tx, actorUserId, "VEHICLE_COMPARTMENT_RENAMED", id, { before, name });
+    return tx.vehicleCompartment.findUniqueOrThrow({ where: { id } });
   });
-
-  if (!vehicle) {
-    throw new Error("Vehicle not found");
-  }
-
-  const existingCompartment = await prisma.vehicleCompartment.findFirst({
-    where: {
-      vehicleId,
-      name: data.name,
-    },
-  });
-
-  if (existingCompartment) {
-    throw new Error("Ya existe un compartimento con ese nombre en este camión");
-  }
-
-  const compartment = await prisma.vehicleCompartment.create({
-    data: {
-      vehicleId,
-      name: data.name,
-      description: normalizeNullable(data.description),
-      sortOrder: data.sortOrder ?? 0,
-    },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "VEHICLE_COMPARTMENT_CREATED",
-      entityType: "VehicleCompartment",
-      entityId: compartment.id,
-      metadata: {
-        vehicleId,
-        name: compartment.name,
-      },
-    },
-  });
-
-  return compartment;
 }
-
-export async function createInventoryItem(
-  compartmentId: string,
-  data: {
-    name: string;
-    expectedQuantity: number;
-    state?: "OK" | "REVIEW" | "OUT";
-    notes?: string | null;
-  },
-  actorUserId?: string,
-) {
-  const compartment = await prisma.vehicleCompartment.findUnique({
-    where: { id: compartmentId },
-    include: {
-      vehicle: true,
-    },
+export async function removeCompartment(id: string, revision: number, actorUserId: string) {
+  return serializable(async (tx) => {
+    const before = await tx.vehicleCompartment.findUnique({ where: { id }, include: { _count: { select: { items: true } } } });
+    if (!before) throw new OperationError(404, "Baulera no encontrada");
+    await activeVehicle(tx, before.vehicleId);
+    if (before._count.items) throw new OperationError(409, "Mueva sus materiales antes de eliminar la baulera; no se borra inventario en cascada");
+    if (!(await tx.vehicleCompartment.deleteMany({ where: { id, revision, items: { none: {} } } })).count) throw new OperationError(409, "La baulera cambio; recargue antes de eliminar");
+    await audit(tx, actorUserId, "VEHICLE_COMPARTMENT_DELETED", id, { before }); return { message: "Baulera vacia eliminada" };
   });
-
-  if (!compartment) {
-    throw new Error("Compartment not found");
-  }
-
-  const existingItem = await prisma.vehicleInventoryItem.findFirst({
-    where: {
-      compartmentId,
-      name: data.name,
-    },
-    select: {
-      id: true,
-    },
-  });
-
-  if (existingItem) {
-    throw new Error("Ya existe un item con ese nombre en este compartimento");
-  }
-
-  const item = await prisma.vehicleInventoryItem.create({
-    data: {
-      compartmentId,
-      name: data.name,
-      expectedQuantity: data.expectedQuantity,
-      state: data.state ?? "OK",
-      notes: normalizeNullable(data.notes),
-    },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "VEHICLE_INVENTORY_ITEM_CREATED",
-      entityType: "VehicleInventoryItem",
-      entityId: item.id,
-      metadata: {
-        vehicleId: compartment.vehicleId,
-        compartmentId,
-        name: item.name,
-        expectedQuantity: item.expectedQuantity,
-        state: item.state,
-      },
-    },
-  });
-
-  return item;
 }
-
-export async function updateInventoryItem(
-  itemId: string,
-  data: {
-    compartmentId?: string;
-    name?: string;
-    expectedQuantity?: number;
-    state?: "OK" | "REVIEW" | "OUT";
-    notes?: string | null;
-  },
-  actorUserId?: string,
-) {
-  const existingItem = await prisma.vehicleInventoryItem.findUnique({
-    where: { id: itemId },
-    include: {
-      compartment: {
-        include: {
-          vehicle: true,
-        },
-      },
-    },
-  });
-
-  if (!existingItem) {
-    throw new Error("Inventory item not found");
-  }
-
-  if (data.compartmentId && data.compartmentId !== existingItem.compartmentId) {
-    const targetCompartment = await prisma.vehicleCompartment.findUnique({
-      where: { id: data.compartmentId },
-      select: {
-        id: true,
-        vehicleId: true,
-      },
-    });
-
-    if (!targetCompartment) {
-      throw new Error("Target compartment not found");
+export async function reorderCompartments(vehicleId: string, input: z.infer<typeof compartmentOrderSchema>, actorUserId: string) {
+  return serializable(async (tx) => {
+    await activeVehicle(tx, vehicleId);
+    const before = await tx.vehicleCompartment.findMany({ where: { vehicleId }, select: { id: true, sortOrder: true, revision: true } });
+    if (before.length !== input.compartments.length || before.some((c) => !input.compartments.some((v) => v.id === c.id && v.revision === c.revision))) throw new OperationError(409, "El inventario cambio; envie todas las bauleras vigentes");
+    for (const [sortOrder, c] of input.compartments.entries()) {
+      if (!(await tx.vehicleCompartment.updateMany({ where: { id: c.id, vehicleId, revision: c.revision }, data: { sortOrder, revision: { increment: 1 } } })).count) throw new OperationError(409, "La baulera cambio");
     }
-
-    if (targetCompartment.vehicleId !== existingItem.compartment.vehicleId) {
-      throw new Error("No se puede mover un ítem a otro vehículo");
-    }
-  }
-
-  const targetCompartmentId = data.compartmentId ?? existingItem.compartmentId;
-  const targetName = data.name ?? existingItem.name;
-
-  if (
-    targetCompartmentId !== existingItem.compartmentId ||
-    targetName !== existingItem.name
-  ) {
-    const duplicateItem = await prisma.vehicleInventoryItem.findFirst({
-      where: {
-        id: {
-          not: itemId,
-        },
-        compartmentId: targetCompartmentId,
-        name: targetName,
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (duplicateItem) {
-      throw new Error("Ya existe un item con ese nombre en este compartimento");
-    }
-  }
-
-  const updatedItem = await prisma.vehicleInventoryItem.update({
-    where: { id: itemId },
-    data: {
-      compartmentId: data.compartmentId,
-      name: data.name,
-      expectedQuantity: data.expectedQuantity,
-      state: data.state,
-      notes: data.notes !== undefined ? normalizeNullable(data.notes) : undefined,
-    },
+    await audit(tx, actorUserId, "VEHICLE_COMPARTMENTS_REORDERED", vehicleId, { before, after: input.compartments }); return { message: "Orden guardado" };
   });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "VEHICLE_INVENTORY_ITEM_UPDATED",
-      entityType: "VehicleInventoryItem",
-      entityId: updatedItem.id,
-      metadata: {
-        vehicleId: existingItem.compartment.vehicleId,
-        before: {
-          compartmentId: existingItem.compartmentId,
-          name: existingItem.name,
-          expectedQuantity: existingItem.expectedQuantity,
-          state: existingItem.state,
-          notes: existingItem.notes,
-        },
-        after: {
-          compartmentId: updatedItem.compartmentId,
-          name: updatedItem.name,
-          expectedQuantity: updatedItem.expectedQuantity,
-          state: updatedItem.state,
-          notes: updatedItem.notes,
-        },
-      },
-    },
-  });
-
-  return updatedItem;
 }
-
-export async function deleteInventoryItem(
-  itemId: string,
-  actorUserId?: string,
-) {
-  const existingItem = await prisma.vehicleInventoryItem.findUnique({
-    where: { id: itemId },
-    include: {
-      compartment: true,
-      inspectionItems: {
-        select: {
-          id: true,
-        },
-        take: 1,
-      },
-    },
+export async function applyInventoryTemplate(vehicleId: string, template: keyof typeof inventoryTemplates, actorUserId: string) {
+  return serializable(async (tx) => {
+    const vehicle = await activeVehicle(tx, vehicleId);
+    if (await tx.vehicleCompartment.count({ where: { vehicleId } })) throw new OperationError(409, "La plantilla solo se aplica a moviles sin bauleras; no reemplaza ni duplica inventario existente");
+    for (const [sortOrder, section] of inventoryTemplates[template].compartments.entries()) {
+      await tx.vehicleCompartment.create({ data: { vehicleId, name: section.name, sortOrder, items: { create: section.items.map((name) => ({ name, expectedQuantity: 1, state: "REVIEW", notes: "Plantilla pendiente de inventario fisico y aprobacion de cantidades" })) } } });
+    }
+    await tx.asset.update({ where: { id: vehicle.assetId }, data: { status: "MAINTENANCE" } });
+    await audit(tx, actorUserId, "VEHICLE_TEMPLATE_APPLIED", vehicleId, { template }); return { message: "Plantilla cargada; requiere inventario y control fisico antes de habilitar el movil" };
   });
-
-  if (!existingItem) {
-    throw new Error("Inventory item not found");
-  }
-
-  if (existingItem.inspectionItems.length > 0) {
-    throw new Error(
-      "No se puede eliminar un ítem con historial de inspecciones. Marcá el estado como Fuera.",
-    );
-  }
-
-  await prisma.vehicleInventoryItem.delete({
-    where: { id: itemId },
-  });
-
-  await prisma.auditLog.create({
-    data: {
-      actorUserId: actorUserId || null,
-      action: "VEHICLE_INVENTORY_ITEM_DELETED",
-      entityType: "VehicleInventoryItem",
-      entityId: itemId,
-      metadata: {
-        vehicleId: existingItem.compartment.vehicleId,
-        compartmentId: existingItem.compartmentId,
-        name: existingItem.name,
-        expectedQuantity: existingItem.expectedQuantity,
-        state: existingItem.state,
-      },
-    },
-  });
-
-  return {
-    message: "Ítem eliminado correctamente",
-  };
 }
-
+export async function createInventoryItem(compartmentId: string, data: z.infer<typeof createInventoryItemSchema>, actorUserId?: string) {
+  return serializable(async (tx) => {
+    const section = await tx.vehicleCompartment.findUnique({ where: { id: compartmentId } });
+    if (!section) throw new OperationError(404, "Baulera no encontrada");
+    await activeVehicle(tx, section.vehicleId);
+    if (await tx.vehicleInventoryItem.findFirst({ where: { compartmentId, name: { equals: data.name, mode: "insensitive" } } })) throw new OperationError(409, "Material repetido en la baulera");
+    if (data.labelCode && await tx.vehicleInventoryItem.findUnique({ where: { labelCode: data.labelCode } })) throw new OperationError(409, "La etiqueta ya identifica otro material");
+    const row = await tx.vehicleInventoryItem.create({ data: { ...data, compartmentId, expiresOn: data.expiresOn ? new Date(data.expiresOn) : null } });
+    await audit(tx, actorUserId, "VEHICLE_INVENTORY_ITEM_CREATED", row.id, { vehicleId: section.vehicleId, after: row }); return row;
+  });
+}
+export async function updateInventoryItem(itemId: string, data: z.infer<typeof updateInventoryItemSchema>, actorUserId?: string) {
+  return serializable(async (tx) => {
+    const before = await tx.vehicleInventoryItem.findUnique({ where: { id: itemId }, include: { compartment: true } });
+    if (!before) throw new OperationError(404, "Material no encontrado");
+    await activeVehicle(tx, before.compartment.vehicleId);
+    const target = await tx.vehicleCompartment.findFirst({ where: { id: data.compartmentId ?? before.compartmentId, vehicleId: before.compartment.vehicleId } });
+    if (!target) throw new OperationError(400, "La baulera debe pertenecer al mismo movil");
+    if (await tx.vehicleInventoryItem.findFirst({ where: { id: { not: itemId }, compartmentId: target.id, name: { equals: data.name ?? before.name, mode: "insensitive" } } })) throw new OperationError(409, "Material repetido en la baulera destino");
+    if (data.labelCode && await tx.vehicleInventoryItem.findFirst({ where: { labelCode: data.labelCode, id: { not: itemId } } })) throw new OperationError(409, "Etiqueta ya utilizada");
+    const { revision, expiresOn, ...fields } = data;
+    if (!(await tx.vehicleInventoryItem.updateMany({ where: { id: itemId, revision }, data: { ...fields, ...(expiresOn !== undefined ? { expiresOn: expiresOn ? new Date(expiresOn) : null } : {}), revision: { increment: 1 } } })).count) throw new OperationError(409, "El material cambio; recargue antes de editar");
+    const after = await tx.vehicleInventoryItem.findUniqueOrThrow({ where: { id: itemId } });
+    await audit(tx, actorUserId, "VEHICLE_INVENTORY_ITEM_UPDATED", itemId, { before, after }); return after;
+  });
+}
+export async function deleteInventoryItem(itemId: string, actorUserId?: string, revision?: number) {
+  return serializable(async (tx) => {
+    const before = await tx.vehicleInventoryItem.findUnique({ where: { id: itemId }, include: { compartment: true, _count: { select: { inspectionItems: true } } } });
+    if (!before) throw new OperationError(404, "Material no encontrado");
+    await activeVehicle(tx, before.compartment.vehicleId);
+    if (before._count.inspectionItems) throw new OperationError(409, "No se elimina material con controles historicos; marquelo fuera de servicio");
+    if (!(await tx.vehicleInventoryItem.deleteMany({ where: { id: itemId, revision } })).count) throw new OperationError(409, "El material cambio");
+    await audit(tx, actorUserId, "VEHICLE_INVENTORY_ITEM_DELETED", itemId, { before }); return { message: "Material eliminado" };
+  });
+}
 export async function getVehicleInventory(vehicleId: string) {
-  const vehicle = await prisma.vehicle.findUnique({
-    where: { id: vehicleId },
-    include: {
-      asset: true,
-      compartments: {
-        orderBy: {
-          sortOrder: "asc",
-        },
-        include: {
-          items: {
-            orderBy: {
-              name: "asc",
-            },
-          },
-        },
-      },
-    },
-  });
-
-  if (!vehicle) {
-    throw new Error("Vehicle not found");
-  }
-
-  return vehicle;
-}
-
-export async function createInspection(data: {
-  vehicleId: string;
-  incidentType?: "FIRE" | "RESCUE" | "ACCIDENT" | "CHEMICAL" | "MEDICAL" | "FLOOD" | "OTHER" | null;
-  inspectionDate?: string;
-  inspectionTime?: string | null;
-  observations?: string | null;
-  actorUserId?: string;
-  responsibleUserIds: string[];
-  items: {
-    inventoryItemId: string;
-    result: "OK" | "MISSING" | "DAMAGED" | "UNCHECKED";
-    observations?: string | null;
-  }[];
-}) {
-  const vehicle = await prisma.vehicle.findUnique({
-    where: { id: data.vehicleId },
-    include: {
-      compartments: {
-        include: {
-          items: true,
-        },
-      },
-    },
-  });
-
-  if (!vehicle) {
-    throw new Error("Vehicle not found");
-  }
-
-  const allVehicleItemIds = vehicle.compartments.flatMap((compartment) =>
-    compartment.items.map((item) => item.id),
-  );
-
-  const invalidItem = data.items.find(
-    (item) => !allVehicleItemIds.includes(item.inventoryItemId),
-  );
-
-  if (invalidItem) {
-    throw new Error("Hay herramientas que no pertenecen a este camión");
-  }
-
-  const responsibleUserIds = Array.from(new Set(data.responsibleUserIds));
-
-  if (responsibleUserIds.length !== data.responsibleUserIds.length) {
-    throw new Error("No se puede repetir el mismo responsable en un control");
-  }
-
-  const users = await prisma.user.findMany({
-    where: {
-      id: { in: responsibleUserIds },
-      deletedAt: null,
-      isActive: true,
-      isPendingApproval: false,
-    },
-    select: {
-      id: true,
-    },
-  });
-
-  if (users.length !== responsibleUserIds.length) {
-    throw new Error("Uno o más bomberos responsables no son válidos");
-  }
-
-  const summaryOk = data.items.filter((item) => item.result === "OK").length;
-  const summaryMissing = data.items.filter((item) => item.result === "MISSING").length;
-  const summaryDamaged = data.items.filter((item) => item.result === "DAMAGED").length;
-  const summaryUnchecked = data.items.filter((item) => item.result === "UNCHECKED").length;
-
-  const inspectionDate = data.inspectionDate
-    ? new Date(data.inspectionDate)
-    : new Date();
-  const vehicleStatus = vehicleStatusForInspection({
-    summaryMissing,
-    summaryDamaged,
-    summaryUnchecked,
-  });
-
-  return prisma.$transaction(async (tx) => {
-    const inspection = await tx.inspection.create({
-      data: {
-        vehicleId: data.vehicleId,
-        incidentType: data.incidentType ?? null,
-        inspectionDate,
-        inspectionTime: normalizeNullable(data.inspectionTime),
-        observations: normalizeNullable(data.observations),
-        summaryOk,
-        summaryMissing,
-        summaryDamaged,
-        summaryUnchecked,
-      },
-    });
-
-    await tx.inspectionResponsible.createMany({
-      data: responsibleUserIds.map((userId) => ({
-        inspectionId: inspection.id,
-        userId,
-      })),
-    });
-
-    for (const item of data.items) {
-      const baseItem = await tx.vehicleInventoryItem.findUnique({
-        where: { id: item.inventoryItemId },
-        select: {
-          expectedQuantity: true,
-        },
-      });
-
-      if (!baseItem) {
-        throw new Error("Inventory item not found");
-      }
-
-      await tx.inspectionItem.create({
-        data: {
-          inspectionId: inspection.id,
-          inventoryItemId: item.inventoryItemId,
-          expectedQuantity: baseItem.expectedQuantity,
-          result: item.result,
-          observations: normalizeNullable(item.observations),
-        },
-      });
-
-      await tx.vehicleInventoryItem.update({
-        where: { id: item.inventoryItemId },
-        data: {
-          state: inventoryStateForResult(item.result),
-        },
-      });
-    }
-
-    await tx.asset.update({
-      where: { id: vehicle.assetId },
-      data: {
-        status: vehicleStatus,
-        lastCheckDate: inspectionDate,
-      },
-    });
-
-    await tx.auditLog.create({
-      data: {
-        actorUserId: data.actorUserId || responsibleUserIds[0] || null,
-        action: "INSPECTION_CREATED",
-        entityType: "Inspection",
-        entityId: inspection.id,
-        metadata: {
-          vehicleId: data.vehicleId,
-          summaryOk,
-          summaryMissing,
-          summaryDamaged,
-          summaryUnchecked,
-        },
-      },
-    });
-
-    return tx.inspection.findUnique({
-      where: { id: inspection.id },
-      include: {
-        vehicle: {
-          include: {
-            asset: true,
-          },
-        },
-        responsibles: {
-          include: {
-            user: {
-              include: {
-                profile: true,
-              },
-            },
-          },
-        },
-        items: {
-          include: {
-            inventoryItem: {
-              include: {
-                compartment: true,
-              },
-            },
-          },
-        },
-      },
-    });
-  });
-}
-
-export async function getInspectionById(inspectionId: string) {
-  const inspection = await prisma.inspection.findUnique({
-    where: { id: inspectionId },
-    include: {
-      vehicle: {
-        include: {
-          asset: true,
-        },
-      },
-      responsibles: {
-        include: {
-          user: {
-            include: {
-              profile: true,
-            },
-          },
-        },
-      },
-      items: {
-        include: {
-          inventoryItem: {
-            include: {
-              compartment: true,
-            },
-          },
-        },
-      },
-    },
-  });
-
-  if (!inspection) {
-    throw new Error("Inspection not found");
-  }
-
-  return inspection;
-}
-
-export async function getVehicleInspections(vehicleId: string) {
-  const vehicle = await prisma.vehicle.findUnique({
-    where: { id: vehicleId },
-  });
-
-  if (!vehicle) {
-    throw new Error("Vehicle not found");
-  }
-
-  return prisma.inspection.findMany({
-    where: {
-      vehicleId,
-    },
-    include: {
-      responsibles: {
-        include: {
-          user: {
-            include: {
-              profile: true,
-            },
-          },
-        },
-      },
-    },
-    orderBy: {
-      inspectionDate: "desc",
-    },
-  });
+  const row = await prisma.vehicle.findFirst({ where: { id: vehicleId, asset: { deletedAt: null } }, include: { asset: true, compartments: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }], include: { items: { orderBy: { name: "asc" }, include: { inspectionItems: { take: 1, orderBy: [{ inspection: { inspectionDate: "desc" } }, { inspection: { inspectionTime: "desc" } }, { createdAt: "desc" }], select: { expectedQuantity: true, observedQuantity: true, result: true, observations: true } } } } } } } });
+  if (!row) throw new OperationError(404, "Movil no encontrado");
+  return row;
 }

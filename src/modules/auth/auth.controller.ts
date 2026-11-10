@@ -14,12 +14,12 @@ export async function loginController(req: Request, res: Response) {
   try {
     const parsed = loginSchema.parse(req.body);
 
-    const result = await loginUser(parsed.username, parsed.password);
+    const result = await loginUser(parsed.username, parsed.password, req.get("user-agent"));
 
     return res.status(200).json(result);
   } catch (error: any) {
     return res.status(401).json({
-      message: error.message || "Login failed",
+      message: "Usuario o contraseña incorrectos",
     });
   }
 }
@@ -33,7 +33,7 @@ export async function refreshTokenController(req: Request, res: Response) {
     return res.status(200).json(result);
   } catch (error: any) {
     return res.status(401).json({
-      message: error.message || "Refresh token failed",
+      message: "Sesion vencida o revocada. Inicie sesion nuevamente.",
     });
   }
 }

@@ -9,19 +9,20 @@ import {
 
 export async function createInspectionController(req: Request, res: Response) {
   try {
-    const responsibleUserId = req.user?.userId;
+    const createdByUserId = req.user?.userId;
 
-    if (!responsibleUserId) {
+    if (!createdByUserId) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
     const parsed = createInspectionSchema.parse(req.body);
+    if (req.user!.role === "FIREFIGHTER" && !parsed.responsibleUserIds.includes(createdByUserId)) return res.status(403).json({ message: "Debe integrar el equipo que realizo el control" });
 
     const inspection = await createInspection({
       ...parsed,
-      inspectionTime: parsed.inspectionTime || null,
+      inspectionTime: parsed.inspectionTime,
       observations: parsed.observations || null,
-      responsibleUserId,
+      createdByUserId,
       items: parsed.items.map((item) => ({
         ...item,
         observations: item.observations || null,
@@ -30,7 +31,7 @@ export async function createInspectionController(req: Request, res: Response) {
 
     return res.status(201).json(inspection);
   } catch (error: any) {
-    return res.status(400).json({
+    return res.status(error.status || 400).json({
       message: error.message || "Failed to create inspection",
     });
   }

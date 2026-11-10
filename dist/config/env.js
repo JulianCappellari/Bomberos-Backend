@@ -15,3 +15,6 @@ exports.env = {
 if (!exports.env.jwtAccessSecret || !exports.env.jwtRefreshSecret) {
     throw new Error("Missing JWT environment variables");
 }
+if (process.env.NODE_ENV === "production" && (exports.env.jwtAccessSecret.length < 32 || exports.env.jwtRefreshSecret.length < 32 || exports.env.jwtAccessSecret === exports.env.jwtRefreshSecret)) {
+    throw new Error("Production requires distinct JWT secrets of at least 32 characters");
+}
