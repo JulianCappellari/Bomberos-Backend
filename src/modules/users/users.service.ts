@@ -128,7 +128,7 @@ export async function getUserById(userId: string) {
   });
 
   if (!user) {
-    throw new Error("User not found");
+    throw new Error("Usuario no encontrado");
   }
 
   const totalAttendanceMinutes = user.attendances.reduce((acc, attendance) => {
@@ -253,7 +253,7 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
   });
 
   if (!existingUser) {
-    throw new Error("User not found");
+    throw new Error("Usuario no encontrado");
   }
   const previousRole = effectiveAccessRole(existingUser.role, existingUser.profile?.rank);
   if (data.revision && existingUser.updatedAt.toISOString() !== data.revision) throw new OperationError(409, "El perfil cambio; recargue antes de guardar");
@@ -310,6 +310,8 @@ export async function updateUser(userId: string, data: any, actorUserId?: string
               fullName: data.fullName,
               dni: data.dni,
               rank: data.rank,
+              // 14: el cambio de cargo registra la fecha del ascenso para calcular la antiguedad en el cargo.
+              rankSince: data.rank !== undefined && data.rank !== existingUser.profile?.rank ? new Date() : undefined,
               badge: data.badge,
               birthDate:
                 data.birthDate !== undefined
@@ -410,7 +412,7 @@ export async function toggleUserActive(userId: string, actorUserId?: string) {
   });
 
   if (!user) {
-    throw new Error("User not found");
+    throw new Error("Usuario no encontrado");
   }
   if (actorUserId === userId && user.isActive) throw new Error("No puede desactivar su propia cuenta");
   if (effectiveAccessRole(user.role, user.profile?.rank) === "ADMIN" && user.isActive && await countAdministrators(tx) <= 1) throw new Error("Debe conservar al menos un administrador activo");

@@ -97,7 +97,9 @@ async function main() {
     const guardShift = await prisma.shift.create({ data: { date: new Date(stationDate(attendance.checkInAt!)), startTime: "00:00", endTime: "00:00", shiftType: "Guardia continua de prueba", createdByUserId: users[0]!.id, assignments: { create: { userId: users[2]!.id } } } });
     const guardedPresence = await call("/members/presence", 200, staff);
     assert.equal(guardedPresence.needsConfirmation, false);
-    assert(new Date(guardedPresence.guardUntil).getTime() >= attendance.checkInAt!.getTime() + 8 * 3600000);
+    // E13: la excepcion dura hasta el fin del turno (medianoche de la estacion), no un plazo fijo; la prueba no depende de la hora.
+    const guardUntilMs = new Date(guardedPresence.guardUntil).getTime();
+    assert(guardUntilMs > attendance.checkInAt!.getTime() + 30 * 60000 && guardUntilMs <= attendance.checkInAt!.getTime() + 24 * 3600000);
     await prisma.shift.delete({ where: { id: guardShift.id } });
     assert((await call("/members/presence", 200, staff)).needsConfirmation);
     const location = { attendanceId: attendance.id, inside: true, latitude: -33, longitude: -64, accuracy: 10, capturedAt: new Date().toISOString() };

@@ -42,7 +42,7 @@ export async function getUserByIdController(req: Request, res: Response) {
     return res.status(200).json(user);
   } catch (error: any) {
     return res.status(404).json({
-      message: error.message || "User not found",
+      message: error.message || "Usuario no encontrado",
     });
   }
 }

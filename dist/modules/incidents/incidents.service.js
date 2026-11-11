@@ -78,7 +78,7 @@ async function createIncident(data) {
             where: { id: data.alertId },
         });
         if (!alert) {
-            throw new Error("Alert not found");
+            throw new Error("Alerta no encontrada");
         }
         if (alert.status !== "ACTIVE") {
             throw new Error("Solo una alerta activa puede generar un incidente");
@@ -316,7 +316,7 @@ async function getIncidentById(incidentId) {
         },
     });
     if (!incident) {
-        throw new Error("Incident not found");
+        throw new Error("Intervención no encontrada");
     }
     return incident;
 }
@@ -325,7 +325,7 @@ async function updateIncident(incidentId, data, actorUserId) {
         where: { id: incidentId },
     });
     if (!existing) {
-        throw new Error("Incident not found");
+        throw new Error("Intervención no encontrada");
     }
     if (existing.status !== "OPEN") {
         throw new Error("Only open incidents can be updated");
@@ -385,7 +385,7 @@ async function closeIncident(incidentId, actorUserId, data, actorRole) {
         where: { id: incidentId },
     });
     if (!incident) {
-        throw new Error("Incident not found");
+        throw new Error("Intervención no encontrada");
     }
     if (incident.status !== "OPEN") {
         throw new Error("Only open incidents can be closed");
@@ -478,7 +478,7 @@ async function createIncidentUpdate(incidentId, actorUserId, body) {
         include: { assignments: { select: { userId: true } } },
     });
     if (!incident)
-        throw new Error("Incident not found");
+        throw new Error("Intervención no encontrada");
     if (incident.status !== "OPEN") {
         throw new Error("No se pueden agregar novedades a una intervencion cerrada");
     }
@@ -539,7 +539,7 @@ async function assignUsersToIncident(incidentId, userIds, actorUserId) {
         where: { id: incidentId },
     });
     if (!incident) {
-        throw new Error("Incident not found");
+        throw new Error("Intervención no encontrada");
     }
     if (incident.status !== "OPEN") {
         throw new Error("Only open incidents can receive assignments");

@@ -124,7 +124,7 @@ export async function issuePersonalEquipment(id: string, input: z.infer<typeof i
     }
     await audit(tx, actorUserId, degraded ? "PERSONAL_EQUIPMENT_ISSUED_EXCEPTION" : "PERSONAL_EQUIPMENT_ISSUED", id, { issueId: issue.id, userId: user.id, ...(degraded ? { exceptionReason: input.exceptionReason } : {}) });
     // P04: la entrega queda pendiente hasta que el titular la acepte.
-    await notify(tx, [user.id], `Confirme la recepción de ${item.asset.name}`, "/me", input.notes || undefined);
+    await notify(tx, [user.id], `Confirme la recepción de ${item.asset.name}`, "/me?tab=clothing", input.notes || undefined);
     return issue;
   });
 }

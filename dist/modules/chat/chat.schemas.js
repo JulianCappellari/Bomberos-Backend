@@ -8,6 +8,7 @@ exports.listChatMessagesQuerySchema = zod_1.z.object({
 });
 exports.createChatMessageSchema = zod_1.z.object({
     body: zod_1.z.string().trim().min(1).max(1000),
+    audience: zod_1.z.enum(["ALL", "COMMAND", "DRIVERS", "GUARD", "BOARD"]).default("ALL"),
 });
 exports.updateChatMessageSchema = zod_1.z.object({
     body: zod_1.z.string().trim().min(1).max(1000),

@@ -2,6 +2,7 @@ import { prisma } from "../../config/prisma";
 import { isCommandRank, effectiveAccessRole } from "../../utils/firefighter-ranks";
 import { OperationError } from "../operations/operations.schemas";
 import { serializable } from "../../utils/transaction";
+import { assertCanSendTo, audienceMemberIds, visibleAudiences, type ChatAudience } from "./chat-audience";
 
 const MESSAGE_INCLUDE = {
   author: {
@@ -56,10 +57,13 @@ async function assertCommandRank(actorUserId: string, sessionRole?: string) {
 export async function listChatMessages(data: {
   limit: number;
   before?: string;
+  actorUserId: string;
 }) {
+  const audiences = await visibleAudiences(prisma, data.actorUserId);
   return prisma.chatMessage.findMany({
     where: {
       deletedAt: null,
+      OR: [{ audience: { in: audiences } }, { authorUserId: data.actorUserId }],
       ...(data.before
         ? {
             createdAt: {
@@ -77,12 +81,16 @@ export async function listChatMessages(data: {
 export async function createChatMessage(data: {
   body: string;
   authorUserId: string;
+  audience?: ChatAudience;
 }) {
   return serializable(async (prisma) => {
+  const audience = data.audience ?? "ALL";
+  await assertCanSendTo(prisma, data.authorUserId, audience);
   const message = await prisma.chatMessage.create({
     data: {
       body: data.body,
       authorUserId: data.authorUserId,
+      audience,
     },
     include: MESSAGE_INCLUDE,
   });
@@ -95,9 +103,15 @@ export async function createChatMessage(data: {
       entityId: message.id,
       metadata: {
         bodyLength: data.body.length,
+        audience,
       },
     },
   });
+  // Un mensaje a un grupo se avisa a sus integrantes; los generales se ven en Comunicaciones.
+  if (audience !== "ALL") {
+    const members = (await audienceMemberIds(prisma, audience)).filter((id) => id !== data.authorUserId);
+    if (members.length) await prisma.memberNotification.createMany({ data: members.map((userId) => ({ userId, title: "Nuevo mensaje para tu grupo", href: "/chat", body: data.body.slice(0, 300) })) });
+  }
 
   return message;
   });
@@ -122,11 +136,12 @@ export async function updateChatMessage(data: {
       editedAt: true,
       createdAt: true,
       body: true,
+      audience: true,
     },
   });
 
   if (!message) {
-    throw new Error("Chat message not found");
+    throw new OperationError(404, "Mensaje no encontrado");
   }
 
   // N02: nadie edita mensajes ajenos; solo su autor.
@@ -158,7 +173,7 @@ export async function updateChatMessage(data: {
   // N05: al editar se restablece el acuse de todos (el acuse queda ligado al contenido) y se avisa
   // a todo el personal para que vuelva a leer y confirmar.
   if (message.body !== data.body) {
-    const people = await prisma.user.findMany({ where: { isActive: true, isPendingApproval: false, deletedAt: null, id: { not: data.actorUserId } }, select: { id: true } });
+    const people = (await audienceMemberIds(prisma, message.audience)).filter((id) => id !== data.actorUserId).map((id) => ({ id }));
     await prisma.memberNotification.createMany({ data: people.map((person) => ({ userId: person.id, title: "Un mensaje fue editado: vuelva a leerlo y confirme la lectura", href: "/chat", body: data.body.slice(0, 300) })) });
   }
 
@@ -186,7 +201,7 @@ export async function deleteChatMessage(data: {
   });
 
   if (!message) {
-    throw new Error("Chat message not found");
+    throw new Error("Mensaje no encontrado");
   }
   if (message.authorUserId !== data.actorUserId) await assertCommandRank(data.actorUserId,data.actorRole);
 
@@ -211,7 +226,7 @@ export async function deleteChatMessage(data: {
     },
   });
 
-  return { message: "Chat message deleted successfully" };
+  return { message: "Mensaje eliminado" };
   });
 }
 
@@ -236,7 +251,7 @@ export async function setChatMessagePinned(data: {
   });
 
   if (!message) {
-    throw new Error("Chat message not found");
+    throw new Error("Mensaje no encontrado");
   }
 
   const updated = await prisma.chatMessage.update({

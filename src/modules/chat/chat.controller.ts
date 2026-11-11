@@ -18,7 +18,7 @@ function resolveStatus(error: unknown) {
   if (error instanceof OperationError) return error.status;
   const message = error instanceof Error ? error.message : "";
 
-  if (message.includes("not found")) return 404;
+  if (message.includes("not found") || message.includes("no encontrad")) return 404;
   if (
     message.includes("not allowed") ||
     message.includes("Only oficiales and sub oficiales")
@@ -32,12 +32,14 @@ function resolveStatus(error: unknown) {
 export async function listChatMessagesController(req: Request, res: Response) {
   try {
     const parsed = listChatMessagesQuerySchema.parse(req.query);
-    const messages = await listChatMessages(parsed);
+    const actorUserId = req.user?.userId;
+    if (!actorUserId) return res.status(401).json({ message: "Sesión no válida" });
+    const messages = await listChatMessages({ ...parsed, actorUserId });
 
     return res.status(200).json(messages);
   } catch (error: any) {
-    return res.status(400).json({
-      message: error.message || "Failed to fetch chat messages",
+    return res.status(error instanceof OperationError ? error.status : 400).json({
+      message: error.message || "No se pudieron cargar los mensajes",
     });
   }
 }
@@ -47,19 +49,20 @@ export async function createChatMessageController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = createChatMessageSchema.parse(req.body);
     const message = await createChatMessage({
       body: parsed.body,
       authorUserId: actorUserId,
+      audience: parsed.audience,
     });
 
     return res.status(201).json(message);
   } catch (error: any) {
-    return res.status(400).json({
-      message: error.message || "Failed to create chat message",
+    return res.status(error instanceof OperationError ? error.status : 400).json({
+      message: error.message || "No se pudo enviar el mensaje",
     });
   }
 }
@@ -69,7 +72,7 @@ export async function updateChatMessageController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = updateChatMessageSchema.parse(req.body);
@@ -93,7 +96,7 @@ export async function deleteChatMessageController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const result = await deleteChatMessage({
@@ -115,7 +118,7 @@ export async function pinChatMessageController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = pinChatMessageSchema.parse(req.body);

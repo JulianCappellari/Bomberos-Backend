@@ -24,7 +24,7 @@ export async function authenticate(
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const token = authHeader.split(" ")[1];
@@ -43,6 +43,6 @@ export async function authenticate(
 
     next();
   } catch {
-    return res.status(401).json({ message: "Invalid or expired token" });
+    return res.status(401).json({ message: "La sesión venció. Volvé a ingresar." });
   }
 }

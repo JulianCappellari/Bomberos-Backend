@@ -8,7 +8,7 @@ import { acknowledgement, acknowledgementHistory, addPeriod, availability, cance
 import { acknowledgementReport } from "./members.service";
 import { confirmPresence, presenceSchema, presenceState, markPromptShown } from "./presence.service";
 import { personalStatistics } from "./statistics.service";
-import { notifications, readNotification } from "./notifications.service";
+import { notifications, readAllNotifications, readNotification } from "./notifications.service";
 import { groups, groupSchema, saveGroup, controlEligibility } from "./groups.service";
 import { cancelParticipation, cancelParticipationSchema, listParticipations, participationSchema, recordParticipation, verifyParticipation } from "./participation.service";
 import { personalActivity } from "./personal-activity.service";
@@ -26,6 +26,7 @@ router.get("/control-eligibility", async (req, res) => { res.json(await controlE
 router.post("/groups", async (req, res) => { res.status(201).json(await saveGroup(null, groupSchema.parse(req.body), req.user!)); });
 router.put("/groups/:id", async (req, res) => { res.json(await saveGroup(String(req.params.id), groupSchema.parse(req.body), req.user!)); });
 router.get("/notifications", async (req, res) => { res.json(await notifications(req.user!.userId, z.coerce.number().int().min(1).max(100000).default(1).parse(req.query.page))); });
+router.post("/notifications/read-all", async (req, res) => { res.json(await readAllNotifications(req.user!.userId)); });
 router.post("/notifications/:id/read", async (req, res) => { res.json(await readNotification(String(req.params.id), req.user!.userId)); });
 router.get("/statistics/:userId", async (req, res) => { res.json(await personalStatistics(String(req.params.userId), req.user!)); });
 router.get("/presence", async (req, res) => { res.json(await presenceState(req.user!.userId)); });

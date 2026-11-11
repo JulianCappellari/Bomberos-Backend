@@ -11,7 +11,7 @@ export async function getDashboardSummaryController(
     const role = req.user?.role;
 
     if (!userId || !role) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const summary = await getDashboardSummary(userId, role);
@@ -30,7 +30,7 @@ export async function getOperationalReadinessController(
 ) {
   try {
     if (!req.user?.userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const readiness = await getOperationalReadiness();

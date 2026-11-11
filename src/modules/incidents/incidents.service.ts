@@ -99,7 +99,7 @@ export async function createIncident(data: {
     });
 
     if (!alert) {
-      throw new Error("Alert not found");
+      throw new Error("Alerta no encontrada");
     }
 
     if (alert.status !== "ACTIVE") {
@@ -371,7 +371,7 @@ export async function getIncidentById(incidentId: string) {
   });
 
   if (!incident) {
-    throw new Error("Incident not found");
+    throw new Error("Intervención no encontrada");
   }
 
   return incident;
@@ -394,7 +394,7 @@ export async function updateIncident(
   });
 
   if (!existing) {
-    throw new Error("Incident not found");
+    throw new Error("Intervención no encontrada");
   }
 
   if (existing.status !== "OPEN") {
@@ -467,7 +467,7 @@ export async function closeIncident(
   });
 
   if (!incident) {
-    throw new Error("Incident not found");
+    throw new Error("Intervención no encontrada");
   }
 
   if (incident.status !== "OPEN") {
@@ -568,7 +568,7 @@ export async function createIncidentUpdate(
     where: { id: incidentId },
     include: { assignments: { select: { userId: true } } },
   });
-  if (!incident) throw new Error("Incident not found");
+  if (!incident) throw new Error("Intervención no encontrada");
   if (incident.status !== "OPEN") {
     throw new Error("No se pueden agregar novedades a una intervencion cerrada");
   }
@@ -643,7 +643,7 @@ export async function assignUsersToIncident(
   });
 
   if (!incident) {
-    throw new Error("Incident not found");
+    throw new Error("Intervención no encontrada");
   }
 
   if (incident.status !== "OPEN") {

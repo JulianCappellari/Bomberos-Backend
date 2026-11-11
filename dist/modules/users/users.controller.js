@@ -38,7 +38,7 @@ async function getUserByIdController(req, res) {
     }
     catch (error) {
         return res.status(404).json({
-            message: error.message || "User not found",
+            message: error.message || "Usuario no encontrado",
         });
     }
 }

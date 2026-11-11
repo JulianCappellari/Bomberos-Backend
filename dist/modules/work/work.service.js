@@ -28,6 +28,9 @@ const include = { maintenanceJob: { select: { responsibleUserId: true } }, photo
 async function activePeople(tx, ids) {
     if (new Set(ids).size !== ids.length || await tx.user.count({ where: { id: { in: ids }, isActive: true, isPendingApproval: false, deletedAt: null } }) !== ids.length)
         throw new operations_schemas_1.OperationError(400, "Seleccione personal activo y no repetido");
+    // B01: el administrador tecnico administra el sistema; nunca integra tareas, dotaciones ni servicios.
+    if (await tx.user.count({ where: { id: { in: ids }, profile: { rank: { equals: "Administrador", mode: "insensitive" } } } }))
+        throw new operations_schemas_1.OperationError(400, "El administrador del sistema no realiza tareas ni integra dotaciones; solo las administra");
 }
 function scope(actor) {
     return (0, operations_schemas_1.isOperationsManager)(actor.role) ? {} : { OR: [{ status: { in: ["ASSIGNED", "RETURNED"] } }, { status: "SUBMITTED", members: { some: { userId: actor.userId } } }] };

@@ -58,7 +58,7 @@ export async function approveApplicationController(req: Request, res: Response) 
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const result = await approveApplication(applicationId, actorUserId);
@@ -77,7 +77,7 @@ export async function rejectApplicationController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = rejectApplicationSchema.parse(req.body);

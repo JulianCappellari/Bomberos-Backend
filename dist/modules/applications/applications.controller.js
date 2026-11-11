@@ -48,7 +48,7 @@ async function approveApplicationController(req, res) {
         const applicationId = String(req.params.id);
         const actorUserId = req.user?.userId;
         if (!actorUserId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const result = await (0, applications_service_1.approveApplication)(applicationId, actorUserId);
         return res.status(200).json(result);
@@ -64,7 +64,7 @@ async function rejectApplicationController(req, res) {
         const applicationId = String(req.params.id);
         const actorUserId = req.user?.userId;
         if (!actorUserId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const parsed = applications_schemas_1.rejectApplicationSchema.parse(req.body);
         const result = await (0, applications_service_1.rejectApplication)(applicationId, actorUserId, parsed.rejectReason);

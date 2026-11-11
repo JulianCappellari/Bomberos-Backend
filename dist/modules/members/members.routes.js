@@ -32,6 +32,7 @@ router.get("/control-eligibility", async (req, res) => { res.json(await (0, grou
 router.post("/groups", async (req, res) => { res.status(201).json(await (0, groups_service_1.saveGroup)(null, groups_service_1.groupSchema.parse(req.body), req.user)); });
 router.put("/groups/:id", async (req, res) => { res.json(await (0, groups_service_1.saveGroup)(String(req.params.id), groups_service_1.groupSchema.parse(req.body), req.user)); });
 router.get("/notifications", async (req, res) => { res.json(await (0, notifications_service_1.notifications)(req.user.userId, zod_1.z.coerce.number().int().min(1).max(100000).default(1).parse(req.query.page))); });
+router.post("/notifications/read-all", async (req, res) => { res.json(await (0, notifications_service_1.readAllNotifications)(req.user.userId)); });
 router.post("/notifications/:id/read", async (req, res) => { res.json(await (0, notifications_service_1.readNotification)(String(req.params.id), req.user.userId)); });
 router.get("/statistics/:userId", async (req, res) => { res.json(await (0, statistics_service_1.personalStatistics)(String(req.params.userId), req.user)); });
 router.get("/presence", async (req, res) => { res.json(await (0, presence_service_1.presenceState)(req.user.userId)); });

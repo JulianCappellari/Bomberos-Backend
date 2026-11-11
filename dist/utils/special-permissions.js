@@ -24,9 +24,9 @@ function hasPermission(user, permission) {
 function authorizeOrPermission(permission, ...roles) {
     return (req, res, next) => {
         if (!req.user?.role)
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         if (!roles.includes(req.user.role) && !hasPermission(req.user, permission))
-            return res.status(403).json({ message: "Forbidden" });
+            return res.status(403).json({ message: "No tenés permiso para esta acción" });
         next();
     };
 }

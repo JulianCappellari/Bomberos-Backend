@@ -19,7 +19,7 @@ export async function createShiftController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = createShiftSchema.parse(req.body);
@@ -41,7 +41,7 @@ export async function createShiftController(req: Request, res: Response) {
 export async function updateShiftController(req: Request, res: Response) {
   try {
     const actorUserId = req.user?.userId;
-    if (!actorUserId) return res.status(401).json({ message: "Unauthorized" });
+    if (!actorUserId) return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     const parsed = updateShiftSchema.parse(req.body);
     const shift = await updateShift(
       String(req.params.id),

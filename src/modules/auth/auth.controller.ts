@@ -44,7 +44,7 @@ export async function changePasswordController(req: Request, res: Response) {
     const userId = req.user?.userId;
 
     if (!userId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const result = await changeUserPassword(

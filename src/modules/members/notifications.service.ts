@@ -24,6 +24,15 @@ export async function notifications(userId: string, page: number) {
   ], { isolationLevel: "RepeatableRead" });
   return { items, total, unread };
 }
+// Marca todas las pendientes de una vez; una sola entrada de auditoria con la cantidad.
+export async function readAllNotifications(userId: string) {
+  return prisma.$transaction(async (tx) => {
+    const changed = await tx.memberNotification.updateMany({ where: { userId, readAt: null }, data: { readAt: new Date() } });
+    if (changed.count) await tx.auditLog.create({ data: { actorUserId: userId, action: "NOTIFICATION_READ_ALL", entityType: "MemberNotification", entityId: userId, metadata: { count: changed.count } } });
+    return { message: "Notificaciones marcadas como leídas", count: changed.count };
+  });
+}
+
 export async function readNotification(id: string, userId: string) {
   return prisma.$transaction(async (tx) => {
     const row = await tx.memberNotification.findFirst({ where: { id, userId } });

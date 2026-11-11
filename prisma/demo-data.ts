@@ -6,6 +6,9 @@ import { seedExtendedScenarios } from "./seed-scenarios";
 import { assertDemoOnly } from "./seed-safety";
 import { resetDemoCredentials } from "./demo-credentials";
 import { seedCurrentRules } from "./seed-current-rules";
+import { seedQuestionnaireScenarios } from "./seed-questionnaire";
+import { seedProfessionalScenarios } from "./seed-professional-scenarios";
+import { seedCompleteIncidentSheets } from "./seed-incident-sheets";
 
 const id = (name: string) => `demo_v2_${name}`;
 
@@ -1329,6 +1332,9 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
 
       const extended = await seedExtendedScenarios(tx, passwordHash, reference);
       await seedCurrentRules(tx, passwordHash, reference);
+      const questionnaire = await seedQuestionnaireScenarios(tx);
+      await seedProfessionalScenarios(tx, reference);
+      await seedCompleteIncidentSheets(tx, reference);
       if (options.resetPasswords) await resetDemoCredentials(tx, password);
 
       // Auditoría final
@@ -1362,7 +1368,11 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
         notices: await tx.dispatchNotice.count(), driverAuthorizations: await tx.vehicleDriverAuthorization.count(),
         expenseClaims: await tx.expenseClaim.count(), expenseApprovals: await tx.expenseApproval.count(),
         expensePayments: await tx.expensePayment.count(), courses: await tx.courseAttendance.count(),
-        extended,
+        taskTransfers: await tx.workTaskTransfer.count(), shiftSwaps: await tx.shiftSwapRequest.count(),
+        receipts: await tx.expenseClaim.count({ where: { receiptSha256: { not: null } } }),
+        attendanceCorrections: await tx.attendanceCorrection.count(),
+        interventionSheets: await tx.incidentSheet.count(),
+        extended, questionnaire,
       };
     },
     { isolationLevel: "Serializable", timeout: 60000 }

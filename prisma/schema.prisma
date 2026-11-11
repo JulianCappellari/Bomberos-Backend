@@ -219,6 +219,9 @@ model User {
   createdInspections     Inspection[] @relation("InspectionCreatedBy")
 
   chatMessages ChatMessage[] @relation("ChatMessageAuthor")
+  stationEventsCreated StationEvent[] @relation("StationEventCreator")
+  stationEventRsvps StationEventRsvp[]
+  documentReads DocumentRead[]
 
   auditLogsAsActor AuditLog[] @relation("AuditActor")
   complianceRecords ComplianceRecord[] @relation("ComplianceUser")
@@ -295,6 +298,7 @@ model FirefighterProfile {
   address   String?   @db.VarChar(180)
   bloodType String?   @db.VarChar(10)
   joinDate  DateTime?
+  rankSince DateTime?
   avatarUrl String?   @db.VarChar(255)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -558,6 +562,7 @@ model ChatMessage {
   id           String    @id @default(cuid())
   authorUserId String
   body         String    @db.Text
+  audience     String    @default("ALL") @db.VarChar(16)
   isPinned     Boolean   @default(false)
   editedAt     DateTime?
   deletedAt    DateTime?
@@ -873,6 +878,7 @@ model OperationalDocument {
   createdBy User @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
   shift Shift? @relation(fields: [shiftId], references: [id], onDelete: Restrict)
   incident Incident? @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  reads DocumentRead[]
 
   @@index([kind, status])
   @@index([shiftId])
@@ -1683,7 +1689,8 @@ model ShiftSwapRequest {
   id String @id @default(cuid())
   shiftId String
   fromUserId String
-  toUserId String
+  toUserId String?
+  isOpenOffer Boolean @default(false)
   reason String @db.VarChar(1000)
   status String @default("PENDING") @db.VarChar(16)
   acceptedAt DateTime?
@@ -1693,8 +1700,64 @@ model ShiftSwapRequest {
   createdAt DateTime @default(now())
   shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
   from User @relation("SwapFrom", fields: [fromUserId], references: [id], onDelete: Restrict)
-  to User @relation("SwapTo", fields: [toUserId], references: [id], onDelete: Restrict)
+  to User? @relation("SwapTo", fields: [toUserId], references: [id], onDelete: Restrict)
   decidedBy User? @relation("SwapDecider", fields: [decidedByUserId], references: [id], onDelete: Restrict)
   @@index([shiftId, status])
   @@index([toUserId, status])
+  @@index([isOpenOffer, status])
+}
+
+// 27: agenda del cuartel con confirmacion de asistencia.
+model StationEvent {
+  id String @id @default(cuid())
+  title String @db.VarChar(160)
+  description String @default("") @db.VarChar(4000)
+  kind String @db.VarChar(16)
+  location String @default("") @db.VarChar(200)
+  startsAt DateTime
+  endsAt DateTime
+  createdByUserId String
+  cancelledAt DateTime?
+  cancelReason String? @db.VarChar(1000)
+  reminderSentAt DateTime?
+  revision Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  createdBy User @relation("StationEventCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  rsvps StationEventRsvp[]
+  @@index([startsAt])
+}
+
+model StationEventRsvp {
+  eventId String
+  userId String
+  response String @db.VarChar(12)
+  respondedAt DateTime @default(now())
+  event StationEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([eventId, userId])
+  @@index([userId])
+}
+
+// 30: registro de lectura de cada version publicada de un documento o protocolo.
+model DocumentRead {
+  documentId String
+  userId String
+  revision Int
+  readAt DateTime @default(now())
+  document OperationalDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@id([documentId, userId, revision])
+  @@index([userId])
+}
+
+// 14: requisitos para estar en condiciones de ascender desde cada cargo.
+model PromotionRule {
+  rank String @id @db.VarChar(80)
+  nextRank String @db.VarChar(80)
+  minYearsInRank Int @default(0)
+  minYearsService Int @default(0)
+  minApprovedCourses Int @default(0)
+  updatedByUserId String?
+  updatedAt DateTime @updatedAt
 }

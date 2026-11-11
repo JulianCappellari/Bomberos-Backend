@@ -36,12 +36,14 @@ export async function seedExtendedScenarios(tx: Prisma.TransactionClient, passwo
 
   // Day and night crews are disjoint, including overnight handovers.
   const teams = [["oficial", "bombero", "sofia"], ["guardia", "camila", "operador"], ["subjefe", "nicolas", "aspirante"], ["lucia", "mateo"]];
+  const absences = await tx.emergencyAvailability.findMany({ where: { cancelledAt: null } });
   let shifts = 0, participations = 0;
   for (let offset = -28; offset <= 16; offset++) {
     if (offset === 1) continue;
     for (const [periodIndex, period] of ["DAY", "NIGHT"].entries()) {
-      const date = day(offset), crew = teams[((offset + 28) * 2 + periodIndex) % teams.length]!;
-      const shift = await tx.shift.upsert({ where: { date_period: { date, period: period as "DAY" | "NIGHT" } }, update: {}, create: { id: ex(`shift_${offset}_${period}`), date, period: period as "DAY" | "NIGHT", startTime: period === "DAY" ? "08:00" : "20:00", endTime: period === "DAY" ? "20:00" : "08:00", shiftType: `Guardia ${period === "DAY" ? "diurna" : "nocturna"} DEMO`, notes: "Agenda ficticia con relevo a las 08 y 20; no equivale a asistencia efectiva", createdByUserId: id("guardia") } }); shifts++;
+      const date = day(offset), slotStart = at(offset, periodIndex === 0 ? 8 : 20), slotEnd = at(offset + periodIndex, periodIndex === 0 ? 20 : 8);
+      const crew = teams[((offset + 28) * 2 + periodIndex) % teams.length]!.filter(key => !absences.some(a => a.userId === id(key) && a.startsAt < slotEnd && (!a.endsAt || a.endsAt > slotStart)));
+      const shift = await tx.shift.upsert({ where: { date_period: { date, period: period as "DAY" | "NIGHT" } }, update: {}, create: { id: ex(`shift_${offset}_${period}`), date, period: period as "DAY" | "NIGHT", startTime: period === "DAY" ? "08:00" : "20:00", endTime: period === "DAY" ? "20:00" : "08:00", shiftType: `Guardia ${period === "DAY" ? "diurna" : "nocturna"} DEMO`, notes: "Agenda ficticia con relevo a las 08 y 20; no equivale a asistencia efectiva", createdByUserId: id("oficial") } }); shifts++;
       for (const key of crew) {
         await tx.shiftAssignment.upsert({ where: { shiftId_userId: { shiftId: shift.id, userId: id(key) } }, update: {}, create: { id: ex(`assigned_${offset}_${period}_${key}`), shiftId: shift.id, userId: id(key), assignedAt: new Date(Math.min(at(offset - 3, 12).getTime(), clock.createdAt.getTime())) } });
         if (offset < 0) {

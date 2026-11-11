@@ -12,9 +12,12 @@ async function main() {
     const before = new Set((await prisma.user.findMany({ select: { id: true } })).map((row) => row.id));
     console.log("Seed de demostracion: datos sinteticos, no utilizar en operaciones reales.");
     const resetPasswords = process.env.SEED_RESET_DEMO_PASSWORDS === "true";
-    const { extended, ...counts } = await seedDemo(prisma, password, { resetPasswords });
+    const { extended, questionnaire, ...counts } = await seedDemo(prisma, password, { resetPasswords });
     console.table(counts);
     console.log(extended.note);
+    console.log(`Cuestionario: ${questionnaire.convocados} convocados sinteticos; escenarios ${questionnaire.primeraVez === "sí" ? "creados" : "conservados"}.`);
+    console.log("Guia de cuentas, escenarios y resultados esperados: GUIA_SEED_PROFESIONAL.md");
+    console.log("Las fechas quedan ancladas a la primera carga; repetir el seed no reabre tareas, pagos o asistencias ya resueltas.");
     const users = await prisma.user.findMany({ where: { id: { startsWith: "demo_v2_" } }, include: { profile: true }, orderBy: { username: "asc" } });
     const created = users.filter((row) => !before.has(row.id));
     console.table(users.map((row) => ({ usuario: row.username, cargo: row.profile?.rank, acceso: effectiveAccessRole(row.role, row.profile?.rank), estado: row.deletedAt ? "Baja" : row.isPendingApproval ? "Pendiente" : row.isActive ? "Activo" : "Pausado", cambioClave: row.mustChangePassword, nueva: !before.has(row.id) })));

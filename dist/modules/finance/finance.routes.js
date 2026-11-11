@@ -83,10 +83,15 @@ router.post("/expenses", async (req, res) => {
         const owner = await tx.user.findUnique({ where: { id: userId }, select: { profile: { select: { rank: true } } } });
         const row = await tx.expenseClaim.create({ data: { ...data, receiptBytes: receipt.bytes, receiptSha256: receipt.sha256, occurredOn: new Date(data.occurredOn), userId, officerExpense: (0, firefighter_ranks_1.normalizeRank)(owner?.profile?.rank) === "oficial" } });
         await tx.auditLog.create({ data: { actorUserId: userId, action: "EXPENSE_SUBMITTED", entityType: "ExpenseClaim", entityId: row.id, metadata: { amountCents: data.amountCents } } });
-        await (0, notifications_service_1.notifyCommand)(tx, "Gasto presentado para revisión", "/finance", data.title + ": " + (data.amountCents / 100).toFixed(2) + " pesos", userId);
+        await (0, notifications_service_1.notifyCommand)(tx, "Gasto presentado para revisión", "/expenses", data.title + ": " + (data.amountCents / 100).toFixed(2) + " pesos", userId);
         return row.id;
     });
     res.status(201).json({ id, message: "Gasto presentado para revisión de jefatura. No se registró ningún pago." });
+});
+// Seguimiento propio: cualquier integrante ve el estado de lo que presento, sin datos de terceros.
+router.get("/mine", async (req, res) => {
+    const rows = await prisma_1.prisma.expenseClaim.findMany({ where: { userId: req.user.userId }, select: { id: true, title: true, amountCents: true, occurredOn: true, status: true, reviewNote: true, createdAt: true, officerExpense: true, payments: { select: { amountCents: true, reversedAt: true } } }, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: 50 });
+    res.json(rows.map(({ payments, ...r }) => { const paidCents = payments.filter(p => !p.reversedAt).reduce((s, p) => s + p.amountCents, 0); return { ...r, paidCents, debtCents: r.status === "APPROVED" ? r.amountCents - paidCents : 0 }; }));
 });
 router.use(async (req, _res, next) => { if (!(await (0, finance_access_1.financeAccess)(req.user.userId, req.user.role)).canManage)
     throw new operations_schemas_1.OperationError(403, "Información reservada al jefe financiero y al administrador"); next(); });

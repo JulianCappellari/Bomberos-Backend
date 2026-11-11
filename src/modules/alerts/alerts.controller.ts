@@ -28,7 +28,7 @@ export async function createAlertController(req: Request, res: Response) {
   const userId = req.user?.userId;
 
   if (!userId) {
-    return res.status(401).json({ message: "Unauthorized" });
+    return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
   }
 
   const parsed = createAlertSchema.parse(req.body);
@@ -70,7 +70,7 @@ export async function resolveAlertController(req: Request, res: Response) {
   const actorUserId = req.user?.userId;
 
   if (!actorUserId) {
-    return res.status(401).json({ message: "Unauthorized" });
+    return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
   }
 
   const updated = await resolveAlert(alertId, actorUserId);
@@ -83,7 +83,7 @@ export async function resolveAlertController(req: Request, res: Response) {
 export async function cancelAlertController(req: Request, res: Response) {
   const alertId = String(req.params.id);
   const actorUserId = req.user?.userId;
-  if (!actorUserId) return res.status(401).json({ message: "Unauthorized" });
+  if (!actorUserId) return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
   const parsed = cancelAlertSchema.parse(req.body);
   const updated = await cancelAlert(alertId, actorUserId, parsed.reason);
   emitAlertEvent("alert_cancelled", updated);
@@ -95,7 +95,7 @@ export async function respondToAlertController(req: Request, res: Response) {
   const userId = req.user?.userId;
 
   if (!userId) {
-    return res.status(401).json({ message: "Unauthorized" });
+    return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
   }
 
   const parsed = respondAlertSchema.parse(req.body);

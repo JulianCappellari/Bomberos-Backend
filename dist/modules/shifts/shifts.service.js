@@ -9,6 +9,7 @@ exports.assignUsersToShift = assignUsersToShift;
 exports.deleteShift = deleteShift;
 exports.listSwaps = listSwaps;
 exports.requestSwap = requestSwap;
+exports.takeSwap = takeSwap;
 exports.answerSwap = answerSwap;
 exports.decideSwap = decideSwap;
 const prisma_1 = require("../../config/prisma");
@@ -18,6 +19,7 @@ const transaction_1 = require("../../utils/transaction");
 const operations_schemas_1 = require("../operations/operations.schemas");
 const shifts_rules_2 = require("./shifts.rules");
 const notifications_service_1 = require("../members/notifications.service");
+const firefighter_ranks_1 = require("../../utils/firefighter-ranks");
 exports.SHIFT_SCHEDULES = {
     DAY: { startTime: "08:00", endTime: "20:00", label: "Guardia diurna" },
     NIGHT: { startTime: "20:00", endTime: "08:00", label: "Guardia nocturna" },
@@ -128,7 +130,7 @@ async function updateShift(id, data, actorUserId) {
         await ensurePeriodFree(tx, data, id);
         await validateAssignments(tx, { ...data, userIds, excludeShiftId: id, keepUserIds: previousIds });
         await tx.shift.update({ where: { id }, data: fields(data) });
-        await tx.shiftSwapRequest.updateMany({ where: { shiftId: id, status: { in: ["PENDING", "ACCEPTED"] } }, data: { status: "CANCELLED", decidedAt: new Date(), decisionNote: "La guardia fue reprogramada por jefatura" } });
+        await tx.shiftSwapRequest.updateMany({ where: { shiftId: id, status: { in: ["PENDING", "ACCEPTED", "OPEN"] } }, data: { status: "CANCELLED", decidedAt: new Date(), decisionNote: "La guardia fue reprogramada por jefatura" } });
         // M02: toda reasignacion de jefatura se notifica a quienes entran y a quienes salen del turno.
         await (0, notifications_service_1.notify)(tx, userIds.filter((userId) => !previousIds.includes(userId) && userId !== actorUserId), `Guardia asignada: ${data.date} (${exports.SHIFT_SCHEDULES[data.period].label})`, "/calendar");
         await (0, notifications_service_1.notify)(tx, previousIds.filter((userId) => !userIds.includes(userId) && userId !== actorUserId), `Fue relevado de la guardia del ${data.date} (${exports.SHIFT_SCHEDULES[data.period].label})`, "/calendar");
@@ -188,7 +190,8 @@ function assertSwapWindow(shift) {
 async function listSwaps(actor) {
     const manager = ["ADMIN", "OPERATOR"].includes(actor.role);
     return prisma_1.prisma.shiftSwapRequest.findMany({
-        where: manager ? { OR: [{ status: { in: ["PENDING", "ACCEPTED"] } }, { fromUserId: actor.userId }, { toUserId: actor.userId }] } : { OR: [{ fromUserId: actor.userId }, { toUserId: actor.userId }] },
+        // 16: las ofertas abiertas de la bolsa de reemplazos las ve todo el personal.
+        where: manager ? { OR: [{ status: { in: ["PENDING", "ACCEPTED", "OPEN"] } }, { fromUserId: actor.userId }, { toUserId: actor.userId }] } : { OR: [{ fromUserId: actor.userId }, { toUserId: actor.userId }, { status: "OPEN" }] },
         include: swapInclude, orderBy: [{ createdAt: "desc" }, { id: "asc" }], take: 100,
     });
 }
@@ -199,25 +202,65 @@ async function requestSwap(shiftId, input, actorUserId) {
             throw new operations_schemas_1.OperationError(404, "Guardia no encontrada");
         if (!shift.assignments.some((row) => row.userId === actorUserId))
             throw new operations_schemas_1.OperationError(403, "Solo puede proponer el intercambio de una guardia propia");
+        assertSwapWindow(shift);
+        if (await tx.shiftSwapRequest.findFirst({ where: { shiftId, fromUserId: actorUserId, status: { in: ["PENDING", "ACCEPTED", "OPEN"] } } }))
+            throw new operations_schemas_1.OperationError(409, "Ya tiene un intercambio en trámite para esta guardia");
+        const day = shift.date.toISOString().slice(0, 10);
+        // 16: sin destinatario, la guardia se publica en la bolsa de reemplazos para que la tome quien pueda.
+        if (!input.toUserId) {
+            const row = await tx.shiftSwapRequest.create({ data: { shiftId, fromUserId: actorUserId, reason: input.reason, isOpenOffer: true, status: "OPEN" }, include: swapInclude });
+            await tx.auditLog.create({ data: { actorUserId, action: "SHIFT_SWAP_OFFERED", entityType: "Shift", entityId: shiftId, metadata: { swapId: row.id, reason: input.reason } } });
+            const assigned = new Set(shift.assignments.map((a) => a.userId));
+            const people = await tx.user.findMany({ where: { isActive: true, isPendingApproval: false, deletedAt: null }, select: { id: true, profile: { select: { rank: true } } } });
+            const eligible = people.filter((p) => !assigned.has(p.id) && !["administrador", "comision directiva", "aspirante menor"].includes((0, firefighter_ranks_1.normalizeRank)(p.profile?.rank))).map((p) => p.id);
+            await (0, notifications_service_1.notify)(tx, eligible, `Guardia disponible para cubrir: ${day} (${shift.shiftType})`, "/calendar", input.reason);
+            return row;
+        }
         if (input.toUserId === actorUserId || shift.assignments.some((row) => row.userId === input.toUserId))
             throw new operations_schemas_1.OperationError(400, "La persona elegida ya integra esa guardia");
-        assertSwapWindow(shift);
         if (!await tx.user.findFirst({ where: { id: input.toUserId, isActive: true, isPendingApproval: false, deletedAt: null }, select: { id: true } }))
             throw new operations_schemas_1.OperationError(400, "Seleccione personal activo");
-        if (await tx.shiftSwapRequest.findFirst({ where: { shiftId, fromUserId: actorUserId, status: { in: ["PENDING", "ACCEPTED"] } } }))
-            throw new operations_schemas_1.OperationError(409, "Ya tiene un intercambio en trámite para esta guardia");
         const row = await tx.shiftSwapRequest.create({ data: { shiftId, fromUserId: actorUserId, toUserId: input.toUserId, reason: input.reason }, include: swapInclude });
         await tx.auditLog.create({ data: { actorUserId, action: "SHIFT_SWAP_REQUESTED", entityType: "Shift", entityId: shiftId, metadata: { swapId: row.id, toUserId: input.toUserId, reason: input.reason } } });
-        await (0, notifications_service_1.notify)(tx, [input.toUserId], `Le proponen cubrir una guardia: ${shift.date.toISOString().slice(0, 10)} (${shift.shiftType})`, "/calendar", input.reason);
+        await (0, notifications_service_1.notify)(tx, [input.toUserId], `Le proponen cubrir una guardia: ${day} (${shift.shiftType})`, "/calendar", input.reason);
         return row;
+    });
+}
+// 16: tomar una guardia de la bolsa equivale a aceptar el intercambio; luego decide jefatura.
+async function takeSwap(id, actorUserId) {
+    return (0, transaction_1.serializable)(async (tx) => {
+        const row = await tx.shiftSwapRequest.findUnique({ where: { id }, include: { shift: { include: { assignments: true } } } });
+        if (!row || row.status !== "OPEN")
+            throw new operations_schemas_1.OperationError(409, "Esta guardia ya fue tomada o retirada de la bolsa");
+        if (row.fromUserId === actorUserId || row.shift.assignments.some((a) => a.userId === actorUserId))
+            throw new operations_schemas_1.OperationError(400, "Ya integra esa guardia");
+        assertSwapWindow(row.shift);
+        const actor = await tx.user.findFirst({ where: { id: actorUserId, isActive: true, isPendingApproval: false, deletedAt: null }, select: { profile: { select: { rank: true } } } });
+        if (!actor || ["administrador", "comision directiva", "aspirante menor"].includes((0, firefighter_ranks_1.normalizeRank)(actor.profile?.rank)))
+            throw new operations_schemas_1.OperationError(403, "Su cargo no cubre guardias");
+        const changed = await tx.shiftSwapRequest.updateMany({ where: { id, status: "OPEN" }, data: { status: "ACCEPTED", toUserId: actorUserId, acceptedAt: new Date() } });
+        if (!changed.count)
+            throw new operations_schemas_1.OperationError(409, "Otra persona tomó esta guardia");
+        await tx.auditLog.create({ data: { actorUserId, action: "SHIFT_SWAP_TAKEN", entityType: "Shift", entityId: row.shiftId, metadata: { swapId: id, from: row.fromUserId } } });
+        await (0, notifications_service_1.notify)(tx, [row.fromUserId], "Alguien se ofreció a cubrir su guardia; falta la aprobación de jefatura", "/calendar");
+        await (0, notifications_service_1.notifyCommand)(tx, "Reemplazo de guardia para aprobar", "/calendar", `${row.shift.date.toISOString().slice(0, 10)} (${row.shift.shiftType}): ${row.reason}`);
+        return { status: "ACCEPTED" };
     });
 }
 async function answerSwap(id, accept, actorUserId) {
     return (0, transaction_1.serializable)(async (tx) => {
         const row = await tx.shiftSwapRequest.findUnique({ where: { id }, include: { shift: true } });
+        const own = row?.fromUserId === actorUserId;
+        // Quien publico una oferta abierta puede retirarla mientras nadie la tome.
+        if (row && row.status === "OPEN") {
+            if (!own || accept)
+                throw new operations_schemas_1.OperationError(403, "Para cubrir una guardia de la bolsa use la opción Tomar guardia");
+            await tx.shiftSwapRequest.update({ where: { id }, data: { status: "CANCELLED", decidedAt: new Date() } });
+            await tx.auditLog.create({ data: { actorUserId, action: "SHIFT_SWAP_CANCELLED", entityType: "Shift", entityId: row.shiftId, metadata: { swapId: id, openOffer: true } } });
+            return { status: "CANCELLED" };
+        }
         if (!row || row.status !== "PENDING")
             throw new operations_schemas_1.OperationError(409, "El intercambio ya fue respondido o cancelado");
-        const own = row.fromUserId === actorUserId;
         if (!own && row.toUserId !== actorUserId)
             throw new operations_schemas_1.OperationError(403, "Solo la persona propuesta responde el intercambio");
         if (own && accept)
@@ -239,8 +282,9 @@ async function decideSwap(id, input, actor) {
         throw new operations_schemas_1.OperationError(403, "Solo jefatura aprueba intercambios de guardia");
     return (0, transaction_1.serializable)(async (tx) => {
         const row = await tx.shiftSwapRequest.findUnique({ where: { id }, include: { shift: { include: { assignments: true } } } });
-        if (!row || row.status !== "ACCEPTED")
+        if (!row || row.status !== "ACCEPTED" || !row.toUserId)
             throw new operations_schemas_1.OperationError(409, "El intercambio no está aceptado por ambas personas o ya fue resuelto");
+        const toUserId = row.toUserId;
         if ([row.fromUserId, row.toUserId].includes(actor.userId))
             throw new operations_schemas_1.OperationError(403, "Otra persona de jefatura debe resolver un intercambio propio");
         const status = input.approve ? "APPROVED" : "REJECTED";
@@ -248,13 +292,13 @@ async function decideSwap(id, input, actor) {
             assertSwapWindow(row.shift);
             if (!row.shift.assignments.some((a) => a.userId === row.fromUserId))
                 throw new operations_schemas_1.OperationError(409, "Quien pidió el intercambio ya no integra la guardia");
-            await validateAssignments(tx, { date: row.shift.date.toISOString().slice(0, 10), period: row.shift.period || (row.shift.startTime >= "18:00" ? "NIGHT" : "DAY"), userIds: [row.toUserId], excludeShiftId: row.shiftId });
+            await validateAssignments(tx, { date: row.shift.date.toISOString().slice(0, 10), period: row.shift.period || (row.shift.startTime >= "18:00" ? "NIGHT" : "DAY"), userIds: [toUserId], excludeShiftId: row.shiftId });
             await tx.shiftAssignment.delete({ where: { shiftId_userId: { shiftId: row.shiftId, userId: row.fromUserId } } });
-            await tx.shiftAssignment.create({ data: { shiftId: row.shiftId, userId: row.toUserId } });
+            await tx.shiftAssignment.create({ data: { shiftId: row.shiftId, userId: toUserId } });
         }
         await tx.shiftSwapRequest.update({ where: { id }, data: { status, decidedByUserId: actor.userId, decidedAt: new Date(), decisionNote: input.note } });
         await tx.auditLog.create({ data: { actorUserId: actor.userId, action: `SHIFT_SWAP_${status}`, entityType: "Shift", entityId: row.shiftId, metadata: { swapId: id, from: row.fromUserId, to: row.toUserId, note: input.note } } });
-        await (0, notifications_service_1.notify)(tx, [row.fromUserId, row.toUserId], input.approve ? "Intercambio de guardia aprobado" : "Intercambio de guardia rechazado por jefatura", "/calendar", input.note);
+        await (0, notifications_service_1.notify)(tx, [row.fromUserId, toUserId], input.approve ? "Intercambio de guardia aprobado" : "Intercambio de guardia rechazado por jefatura", "/calendar", input.note);
         return { status };
     });
 }

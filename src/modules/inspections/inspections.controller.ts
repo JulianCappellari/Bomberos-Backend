@@ -12,7 +12,7 @@ export async function createInspectionController(req: Request, res: Response) {
     const createdByUserId = req.user?.userId;
 
     if (!createdByUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = createInspectionSchema.parse(req.body);

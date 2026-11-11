@@ -6,7 +6,7 @@ async function authenticate(req, res, next) {
     try {
         const authHeader = req.headers.authorization;
         if (!authHeader || !authHeader.startsWith("Bearer ")) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const token = authHeader.split(" ")[1];
         const user = await (0, auth_session_1.authenticateAccessToken)(token);
@@ -23,6 +23,6 @@ async function authenticate(req, res, next) {
         next();
     }
     catch {
-        return res.status(401).json({ message: "Invalid or expired token" });
+        return res.status(401).json({ message: "La sesión venció. Volvé a ingresar." });
     }
 }

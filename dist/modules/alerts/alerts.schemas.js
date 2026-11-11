@@ -13,7 +13,7 @@ exports.createAlertSchema = zod_1.z.object({
         "OTHER",
     ]),
     priority: zod_1.z.enum(["HIGH", "MEDIUM", "LOW"]),
-    location: zod_1.z.string().min(4, "Location is required"),
+    location: zod_1.z.string().trim().min(4, "Indicá una dirección o referencia de al menos 4 caracteres"),
     description: zod_1.z.string().trim().min(1, "La descripción es obligatoria"),
     contactPhone: zod_1.z.string().optional(),
 });

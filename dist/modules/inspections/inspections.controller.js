@@ -10,7 +10,7 @@ async function createInspectionController(req, res) {
     try {
         const createdByUserId = req.user?.userId;
         if (!createdByUserId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const parsed = inspections_schemas_1.createInspectionSchema.parse(req.body);
         if (req.user.role === "FIREFIGHTER" && !parsed.responsibleUserIds.includes(createdByUserId))

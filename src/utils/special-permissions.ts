@@ -20,8 +20,8 @@ export function hasPermission(user: { permissions?: string[] } | undefined, perm
 // Permite el acceso por rol de sesion o por permiso especial designado.
 export function authorizeOrPermission(permission: SpecialPermission, ...roles: string[]) {
   return (req: Request, res: Response, next: NextFunction) => {
-    if (!req.user?.role) return res.status(401).json({ message: "Unauthorized" });
-    if (!roles.includes(req.user.role) && !hasPermission(req.user, permission)) return res.status(403).json({ message: "Forbidden" });
+    if (!req.user?.role) return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
+    if (!roles.includes(req.user.role) && !hasPermission(req.user, permission)) return res.status(403).json({ message: "No tenés permiso para esta acción" });
     next();
   };
 }

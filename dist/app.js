@@ -31,6 +31,7 @@ const members_routes_1 = __importDefault(require("./modules/members/members.rout
 const push_routes_1 = __importDefault(require("./modules/push/push.routes"));
 const ranking_routes_1 = __importDefault(require("./modules/ranking/ranking.routes"));
 const finance_routes_1 = __importDefault(require("./modules/finance/finance.routes"));
+const station_routes_1 = __importDefault(require("./modules/station/station.routes"));
 const env_1 = require("./config/env");
 const errorHandler_1 = require("./middlewares/errorHandler");
 const request_audit_middleware_1 = require("./middlewares/request-audit.middleware");
@@ -88,5 +89,6 @@ exports.app.use("/api/members", members_routes_1.default);
 exports.app.use("/api/push", push_routes_1.default);
 exports.app.use("/api/ranking", ranking_routes_1.default);
 exports.app.use("/api/finance", finance_routes_1.default);
+exports.app.use("/api/station", station_routes_1.default);
 exports.app.use("/api", (_req, res) => { res.status(404).json({ message: "Ruta no encontrada" }); });
 exports.app.use(errorHandler_1.errorHandler);

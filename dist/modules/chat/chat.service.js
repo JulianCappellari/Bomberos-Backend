@@ -9,6 +9,7 @@ const prisma_1 = require("../../config/prisma");
 const firefighter_ranks_1 = require("../../utils/firefighter-ranks");
 const operations_schemas_1 = require("../operations/operations.schemas");
 const transaction_1 = require("../../utils/transaction");
+const chat_audience_1 = require("./chat-audience");
 const MESSAGE_INCLUDE = {
     author: {
         select: {
@@ -57,9 +58,11 @@ async function assertCommandRank(actorUserId, sessionRole) {
     }
 }
 async function listChatMessages(data) {
+    const audiences = await (0, chat_audience_1.visibleAudiences)(prisma_1.prisma, data.actorUserId);
     return prisma_1.prisma.chatMessage.findMany({
         where: {
             deletedAt: null,
+            OR: [{ audience: { in: audiences } }, { authorUserId: data.actorUserId }],
             ...(data.before
                 ? {
                     createdAt: {
@@ -75,10 +78,13 @@ async function listChatMessages(data) {
 }
 async function createChatMessage(data) {
     return (0, transaction_1.serializable)(async (prisma) => {
+        const audience = data.audience ?? "ALL";
+        await (0, chat_audience_1.assertCanSendTo)(prisma, data.authorUserId, audience);
         const message = await prisma.chatMessage.create({
             data: {
                 body: data.body,
                 authorUserId: data.authorUserId,
+                audience,
             },
             include: MESSAGE_INCLUDE,
         });
@@ -90,9 +96,16 @@ async function createChatMessage(data) {
                 entityId: message.id,
                 metadata: {
                     bodyLength: data.body.length,
+                    audience,
                 },
             },
         });
+        // Un mensaje a un grupo se avisa a sus integrantes; los generales se ven en Comunicaciones.
+        if (audience !== "ALL") {
+            const members = (await (0, chat_audience_1.audienceMemberIds)(prisma, audience)).filter((id) => id !== data.authorUserId);
+            if (members.length)
+                await prisma.memberNotification.createMany({ data: members.map((userId) => ({ userId, title: "Nuevo mensaje para tu grupo", href: "/chat", body: data.body.slice(0, 300) })) });
+        }
         return message;
     });
 }
@@ -110,10 +123,11 @@ async function updateChatMessage(data) {
                 editedAt: true,
                 createdAt: true,
                 body: true,
+                audience: true,
             },
         });
         if (!message) {
-            throw new Error("Chat message not found");
+            throw new operations_schemas_1.OperationError(404, "Mensaje no encontrado");
         }
         // N02: nadie edita mensajes ajenos; solo su autor.
         if (message.authorUserId !== data.actorUserId)
@@ -143,7 +157,7 @@ async function updateChatMessage(data) {
         // N05: al editar se restablece el acuse de todos (el acuse queda ligado al contenido) y se avisa
         // a todo el personal para que vuelva a leer y confirmar.
         if (message.body !== data.body) {
-            const people = await prisma.user.findMany({ where: { isActive: true, isPendingApproval: false, deletedAt: null, id: { not: data.actorUserId } }, select: { id: true } });
+            const people = (await (0, chat_audience_1.audienceMemberIds)(prisma, message.audience)).filter((id) => id !== data.actorUserId).map((id) => ({ id }));
             await prisma.memberNotification.createMany({ data: people.map((person) => ({ userId: person.id, title: "Un mensaje fue editado: vuelva a leerlo y confirme la lectura", href: "/chat", body: data.body.slice(0, 300) })) });
         }
         return updated;
@@ -163,7 +177,7 @@ async function deleteChatMessage(data) {
             },
         });
         if (!message) {
-            throw new Error("Chat message not found");
+            throw new Error("Mensaje no encontrado");
         }
         if (message.authorUserId !== data.actorUserId)
             await assertCommandRank(data.actorUserId, data.actorRole);
@@ -186,7 +200,7 @@ async function deleteChatMessage(data) {
                 },
             },
         });
-        return { message: "Chat message deleted successfully" };
+        return { message: "Mensaje eliminado" };
     });
 }
 async function setChatMessagePinned(data) {
@@ -203,7 +217,7 @@ async function setChatMessagePinned(data) {
             },
         });
         if (!message) {
-            throw new Error("Chat message not found");
+            throw new Error("Mensaje no encontrado");
         }
         const updated = await prisma.chatMessage.update({
             where: { id: data.messageId },

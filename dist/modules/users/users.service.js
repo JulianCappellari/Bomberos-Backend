@@ -129,7 +129,7 @@ async function getUserById(userId) {
         },
     });
     if (!user) {
-        throw new Error("User not found");
+        throw new Error("Usuario no encontrado");
     }
     const totalAttendanceMinutes = user.attendances.reduce((acc, attendance) => {
         return acc + (attendance.workedMinutes ?? 0);
@@ -235,7 +235,7 @@ async function updateUser(userId, data, actorUserId) {
             },
         });
         if (!existingUser) {
-            throw new Error("User not found");
+            throw new Error("Usuario no encontrado");
         }
         const previousRole = (0, firefighter_ranks_1.effectiveAccessRole)(existingUser.role, existingUser.profile?.rank);
         if (data.revision && existingUser.updatedAt.toISOString() !== data.revision)
@@ -288,6 +288,8 @@ async function updateUser(userId, data, actorUserId) {
                             fullName: data.fullName,
                             dni: data.dni,
                             rank: data.rank,
+                            // 14: el cambio de cargo registra la fecha del ascenso para calcular la antiguedad en el cargo.
+                            rankSince: data.rank !== undefined && data.rank !== existingUser.profile?.rank ? new Date() : undefined,
                             badge: data.badge,
                             birthDate: data.birthDate !== undefined
                                 ? toDateOrNull(data.birthDate)
@@ -377,7 +379,7 @@ async function toggleUserActive(userId, actorUserId) {
             include: { profile: true },
         });
         if (!user) {
-            throw new Error("User not found");
+            throw new Error("Usuario no encontrado");
         }
         if (actorUserId === userId && user.isActive)
             throw new Error("No puede desactivar su propia cuenta");

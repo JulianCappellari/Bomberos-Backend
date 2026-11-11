@@ -21,7 +21,17 @@ async function main() {
     let paths = 0;
     async function call(path: string, status: number, token?: string, method = "GET", body?: unknown) {
       if(path==="/inspections"&&method==="POST"&&status===201&&body&&!((body as any).draftId)){const input=body as any;const draft=await call("/inspections/drafts",201,token,"POST",{vehicleId:input.vehicleId});await call("/inspections/drafts/"+draft.id+"/participants",200,token,"PUT",{revision:draft.revision,userIds:input.responsibleUserIds});body={...input,draftId:draft.id,inspectionDate:stationDate(new Date(draft.startedAt)),inspectionTime:new Intl.DateTimeFormat("en-GB",{timeZone:"America/Argentina/Buenos_Aires",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date(draft.startedAt))};}
-      const response = await fetch(base + path, { method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      const request = () => fetch(base + path, { method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      let response = await request();
+      // This suite tests business flows, not throttling. Respect the real login limit.
+      if (path === "/auth/login" && response.status === 429 && status !== 429) {
+        const waitSeconds = Number(response.headers.get("Retry-After"));
+        assert(Number.isFinite(waitSeconds) && waitSeconds >= 0 && waitSeconds <= 60);
+        await response.text();
+        console.log(`Esperando ${waitSeconds}s para respetar el limite de acceso de la API.`);
+        await new Promise(resolve => setTimeout(resolve, (waitSeconds + 1) * 1000));
+        response = await request();
+      }
       const data = await response.json(); assert.equal(response.status, status, `${method} ${path}: ${JSON.stringify(data)}`); assert(!JSON.stringify(data).includes("passwordHash")); paths++; return data;
     }
     const password = randomUUID() + "!Aa9", passwordHash = await bcrypt.hash(password, 10), users: Array<{id:string;username:string}> = [], tokens: string[] = [];
@@ -225,12 +235,9 @@ async function main() {
     const vote = await call(`/alerts/${alert.id}/respond`, 200, staff, "POST", { response: "GOING" });
     const repeated = await call(`/alerts/${alert.id}/respond`, 200, staff, "POST", { response: "GOING" });
     assert.equal(repeated.id, vote.id); assert.equal(repeated.respondedAt, vote.respondedAt);
-    const changedVote = await call(`/alerts/${alert.id}/respond`, 200, staff, "POST", { response: "NOT_GOING" });
-    assert.equal(changedVote.response, "NOT_GOING");
-    assert(new Date(changedVote.respondedAt) > new Date(vote.respondedAt));
-    const voteChanges = await prisma.auditLog.findMany({ where: { entityId: alert.id, action: "ALERT_RESPONSE_CHANGED" } });
-    assert.equal(voteChanges.length, 1);
-    assert.deepEqual(voteChanges[0]!.metadata, { previousResponse: "GOING", response: "NOT_GOING" });
+    // Decision del cuartel: la respuesta queda fija una vez registrada.
+    await call(`/alerts/${alert.id}/respond`, 409, staff, "POST", { response: "NOT_GOING" });
+    assert.equal((await prisma.alertResponse.findUniqueOrThrow({ where: { id: vote.id } })).response, "GOING");
     const falseAlarm = await prisma.alert.create({ data: { type: "OTHER", priority: "HIGH", location: "Lugar ficticio", description: "Falsa alarma ficticia", createdByUserId: users[0]!.id } });
     const falseAlarmIncident = await prisma.incident.create({ data: { alertId: falseAlarm.id, title: "Salida por falsa alarma", type: "OTHER", location: "Lugar ficticio", description: "La salida movilizada se conserva", createdByUserId: users[0]!.id } });
     await call(`/alerts/${falseAlarm.id}/cancel`, 403, staff, "PATCH", { reason: "Intento sin permiso" });
@@ -468,6 +475,35 @@ async function main() {
     assert(pendingSheet.finalizedAt);assert.equal((pendingSheet.finalContext as {dataPending:boolean}).dataPending,true);
     const sheetPath=`/incidents/${incident.id}/sheet`;
     const plan={revision:0,callerName:"Testigo de prueba",callerPhone:"+54 9 11 1234-5678",notes:"Intervención de prueba con dotación registrada",materials:[{name:"Linterna",quantity:1,notes:"Sin novedad"}],baseUserIds:[users[3]!.id],evidenceUrls:["https://example.invalid/evidencia"]};
+    const technicalAdmin=await prisma.user.create({data:{username:"sheet_technical_admin",passwordHash,role:"ADMIN",profile:{create:{fullName:"Administrador de planillas",rank:"Administrador",dni:"SHEET-ADMIN",badge:"SHEET-ADMIN"}}}});
+    const technicalToken=(await call("/auth/login",200,undefined,"POST",{username:technicalAdmin.username,password})).tokens.accessToken;
+    const accessAlert=await prisma.alert.create({data:{type:"OTHER",priority:"LOW",location:"Escenario de permisos",description:"Alerta sintetica para verificar permisos de la planilla",createdByUserId:users[4]!.id}});
+    await prisma.alertResponse.create({data:{alertId:accessAlert.id,userId:users[0]!.id,response:"NOT_GOING"}});
+    const accessIncident=await prisma.incident.create({data:{title:"Planilla sin convocatoria ni QR",type:"OTHER",location:"Lugar sintetico",description:"Verificacion de lectura universal y edicion restringida",alertId:accessAlert.id,createdByUserId:users[4]!.id}});
+    const accessPath=`/incidents/${accessIncident.id}/sheet`, accessPlan={...plan,baseUserIds:[]};
+    assert.equal((await call(accessPath,200,guard)).canWrite,false);
+    await call(accessPath,403,guard,"PUT",accessPlan);
+    assert.equal((await call(accessPath,200,technicalToken)).canWrite,true);
+    await call(accessPath,200,technicalToken,"PUT",accessPlan);
+    assert.equal((await call(accessPath,200,admin)).canWrite,true);
+    await call(accessPath,200,admin,"PUT",{...accessPlan,revision:1,notes:"Correccion por oficial que respondio No voy y no tiene QR"});
+    assert.equal(await prisma.attendance.count({where:{userId:{in:[technicalAdmin.id,users[0]!.id]},status:"OPEN"}}),0);
+    assert.equal((await prisma.alertResponse.findUniqueOrThrow({where:{alertId_userId:{alertId:accessAlert.id,userId:users[0]!.id}}})).response,"NOT_GOING");
+    assert.equal((await prisma.incidentSheet.findUniqueOrThrow({where:{incidentId:accessIncident.id}})).authorId,technicalAdmin.id);
+    assert.equal((await call(accessPath,200,guard)).sheet.revision,2);
+    await call(accessPath,409,technicalToken,"PUT",accessPlan);
+    const accessEntry={category:"NOTE",title:"Anotacion de participante con QR",body:"Se registra una novedad operativa de prueba",occurredAt:new Date(Date.now()-1000).toISOString()};
+    const entry=await call(`/work/incidents/${accessIncident.id}/notebook`,201,staff,"POST",accessEntry);
+    await call(`/work/incidents/${accessIncident.id}/notebook`,200,guard);
+    await call(`/work/incidents/${accessIncident.id}/notebook/${entry.id}`,200,technicalToken,"PUT",{...accessEntry,revision:1,body:"Correccion administrativa de entrada ajena con historial"});
+    await call(`/work/incidents/${accessIncident.id}/notebook`,403,guard,"POST",accessEntry);
+    await call(`/incidents/${accessIncident.id}/close`,200,technicalToken,"PATCH",closing);
+    assert.equal((await call(accessPath,200,guard)).canWrite,false);
+    assert.equal((await call(accessPath,200,technicalToken)).canAddAnnex,true);
+    await call(accessPath,409,technicalToken,"PUT",{...accessPlan,revision:3});
+    await call(`/work/incidents/${accessIncident.id}/notebook`,201,technicalToken,"POST",accessEntry);
+    const legacy=await prisma.incident.create({data:{title:"Historica sin planilla digital",type:"OTHER",location:"Base ficticia",description:"Historial consultable",status:"CLOSED",closedAt:new Date(),createdByUserId:technicalAdmin.id}});
+    assert.equal((await call(`/incidents/${legacy.id}/sheet`,200,guard)).canWrite,false);
     assert.equal((await call(sheetPath,200,staff)).context.incident.movements.length,2);
     await call(sheetPath,403,guard,"PUT",plan);
     await call(sheetPath,400,staff,"PUT",{...plan,baseUserIds:[users[0]!.id]});
@@ -493,11 +529,9 @@ async function main() {
     assert.equal((await call(sheetPath,200,staff)).notebookEntries.some((entry:{id:string})=>entry.id===createdAnnex.id),true);
     assert.equal(await prisma.auditLog.count({where:{entityType:"IncidentNotebookEntry",entityId:createdAnnex.id,action:"INCIDENT_POST_CLOSURE_ANNEX_CREATED"} }),1);
     assert(finalSheet.sheet.finalizedAt);assert.deepEqual(finalSheet.context.notCredited,[users[4]!.id]);
-    assert.equal(await prisma.alertResponse.count({where:{alertId:alert.id,userId:users[4]!.id,response:"GOING"}}),1);
-    const noShow=await prisma.alertResponse.findUniqueOrThrow({where:{alertId_userId:{alertId:alert.id,userId:users[4]!.id}}});
-    assert.equal(noShow.attendanceOutcome,"NO_SHOW");
-    assert(noShow.attendanceOutcomeAt);
-    assert.equal(await prisma.auditLog.count({where:{entityType:"AlertResponse",entityId:noShow.id,action:"ALERT_NO_SHOW_RECORDED"}}),1);
+    // Quien dijo "Voy" y no figura en la planilla pierde la respuesta; queda la constancia en auditoria.
+    assert.equal(await prisma.alertResponse.count({where:{alertId:alert.id,userId:users[4]!.id}}),0);
+    assert.equal(await prisma.auditLog.count({where:{entityType:"Alert",entityId:alert.id,action:"ALERT_GOING_REMOVED_NO_SHOW"}}),1);
     assert.equal((await call(`/members/statistics/${users[4]!.id}`,200,guard)).attendedIncidents,0);
     await call(sheetPath,409,staff,"PUT",{...plan,revision:1});
     assert((await call(`/members/statistics/${users[3]!.id}`,200,minor)).attendedIncidents>=1);

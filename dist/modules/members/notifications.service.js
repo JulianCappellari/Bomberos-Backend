@@ -4,6 +4,7 @@ exports.notify = notify;
 exports.commandUserIds = commandUserIds;
 exports.notifyCommand = notifyCommand;
 exports.notifications = notifications;
+exports.readAllNotifications = readAllNotifications;
 exports.readNotification = readNotification;
 const prisma_1 = require("../../config/prisma");
 const operations_schemas_1 = require("../operations/operations.schemas");
@@ -30,6 +31,15 @@ async function notifications(userId, page) {
         prisma_1.prisma.memberNotification.count({ where }), prisma_1.prisma.memberNotification.count({ where: { ...where, readAt: null } }),
     ], { isolationLevel: "RepeatableRead" });
     return { items, total, unread };
+}
+// Marca todas las pendientes de una vez; una sola entrada de auditoria con la cantidad.
+async function readAllNotifications(userId) {
+    return prisma_1.prisma.$transaction(async (tx) => {
+        const changed = await tx.memberNotification.updateMany({ where: { userId, readAt: null }, data: { readAt: new Date() } });
+        if (changed.count)
+            await tx.auditLog.create({ data: { actorUserId: userId, action: "NOTIFICATION_READ_ALL", entityType: "MemberNotification", entityId: userId, metadata: { count: changed.count } } });
+        return { message: "Notificaciones marcadas como leídas", count: changed.count };
+    });
 }
 async function readNotification(id, userId) {
     return prisma_1.prisma.$transaction(async (tx) => {

@@ -7,6 +7,7 @@ import { seedDemo } from "./demo-data";
 import { isAllowedFirefighterRank } from "../src/utils/firefighter-ranks";
 import { repairDemoBusiness } from "./repair-demo-business";
 import { verifySeedScenarios } from "./verify-seed-scenarios";
+import { verifyProfessionalSeed } from "./verify-professional-seed";
 import bcrypt from "bcrypt";
 import { DEMO_PASSWORD, DEMO_LOGIN_KEYS } from "./demo-credentials";
 
@@ -29,11 +30,16 @@ async function main() {
     const before = await counts();
     console.log(`Registros totales: ${Object.values(before).reduce<number>((sum, n) => sum + Number(n), 0)}`);
     await verifySeedScenarios(client);
+    await verifyProfessionalSeed(client);
+    await client.workTask.update({ where: { id: "demo_v2_professional_task_transfer_ACCEPTED" }, data: { title: "[DEMO] Titulo editado durante la prueba: conservar" } });
+    await client.expenseClaim.update({ where: { id: "demo_v2_professional_expense_paid" }, data: { notes: "Nota editada al probar; el seed no debe sobrescribirla" } });
     const original = await client.user.findUniqueOrThrow({ where: { id: "demo_v2_admin" } });
     await client.user.update({ where: { id: original.id }, data: { passwordHash: "preserved-changed-password-hash" } });
     const edited = await client.user.update({ where: { username: "demo.clave_inicial" }, data: { isActive: false, role: "OPERATOR", profile: { update: { fullName: "[DEMO] Nombre editado que debe conservarse" } } }, include: { profile: true } });
     await seedDemo(client, password);
     assert.deepEqual(await counts(), before, "El seed repetido no debe duplicar ningun modelo");
+    assert.equal((await client.workTask.findUniqueOrThrow({ where: { id: "demo_v2_professional_task_transfer_ACCEPTED" } })).title, "[DEMO] Titulo editado durante la prueba: conservar");
+    assert.equal((await client.expenseClaim.findUniqueOrThrow({ where: { id: "demo_v2_professional_expense_paid" } })).notes, "Nota editada al probar; el seed no debe sobrescribirla");
     const preserved = await client.user.findUniqueOrThrow({ where: { id: edited.id }, include: { profile: true } });
     assert.equal(preserved.isActive, false); assert.equal(preserved.role, "OPERATOR"); assert.equal(preserved.profile?.fullName, edited.profile?.fullName);
     const cliOutput = execFileSync(process.execPath, [require.resolve("tsx/cli"), "prisma/seed-demo.ts"], { env: { ...process.env, NODE_ENV: "development", SEED_SCHEMA: schema, SEED_PASSWORD: password }, stdio: "pipe" }).toString();
@@ -54,7 +60,9 @@ async function main() {
     assert(await client.personalEquipment.count() > 0);
     assert(await client.operationalDocument.count() > 0);
     assert.equal(await client.user.findUniqueOrThrow({ where: { id: original.id } }).then((u) => u.passwordHash), "preserved-changed-password-hash");
-    assert.equal(await client.attendance.count({ where: { status: "OPEN" } }), 2);
+    const openAttendances = await client.attendance.findMany({ where: { status: "OPEN" } });
+    assert(openAttendances.length >= 4);
+    assert.equal(new Set(openAttendances.map(a => a.userId)).size, openAttendances.length, "Nunca dos fichajes abiertos por persona");
     assert(await client.operationalContact.count() > 0);
     assert(await client.complianceRecord.count() > 0);
     assert(await client.maintenanceJob.count({ where: { blocksOperation: true } }) > 0);
@@ -86,6 +94,22 @@ async function main() {
       { action: "SYSTEM_PRESENCE_TIMED_OUT", entityType: "Attendance", entityId: "demo_v2_present_matias" },
     ] });
     await seedDemo(client, DEMO_PASSWORD);
+    const appAlert = await client.alert.create({ data: {
+      type: "OTHER", priority: "LOW", description: "Alerta demo creada desde la aplicacion con identificador automatico",
+      location: "Sitio sintetico", createdByUserId: "demo_v2_bombero",
+    } });
+    const appResponse = await client.alertResponse.create({ data: { alertId: appAlert.id, userId: "demo_v2_operador", response: "NOT_GOING" } });
+    await seedDemo(client, DEMO_PASSWORD);
+    assert.deepEqual(await client.alertResponse.findUniqueOrThrow({ where: { id: appResponse.id } }), appResponse, "El seed debe reconocer y conservar respuestas creadas desde la app por cuentas demo");
+    const appTask = await client.workTask.create({ data: { title: "Tarea demo creada desde la app", description: "Conservar su asignacion y su identificador automatico", createdByUserId: "demo_v2_oficial", members: { create: { userId: "demo_v2_bombero" } } } });
+    await seedDemo(client, DEMO_PASSWORD);
+    assert.equal(await client.workTaskMember.count({ where: { taskId: appTask.id, userId: "demo_v2_bombero" } }), 1, "Las relaciones anidadas de datos demo no son datos operativos ajenos");
+    const automaticAbsence = await client.auditLog.create({ data: { action: "SYSTEM_SHIFT_ABSENCE_RECORDED", entityType: "Shift", entityId: "demo_v2_day", metadata: { userId: "demo_v2_bombero" } } });
+    await seedDemo(client, DEMO_PASSWORD);
+    assert(await client.auditLog.findUnique({ where: { id: automaticAbsence.id } }), "Se conserva la auditoria automatica de ausencias demo");
+    const foreignAbsence = await client.auditLog.create({ data: { action: "SYSTEM_SHIFT_ABSENCE_RECORDED", entityType: "Shift", entityId: "demo_v2_day", metadata: { userId: "foreign_user" } } });
+    await assert.rejects(() => seedDemo(client, password), /no exclusiva.*AuditLog/);
+    await client.auditLog.delete({ where: { id: foreignAbsence.id } });
     const foreignAudit = await client.auditLog.create({ data: { action: "UNRELATED_REAL_OPERATION", entityType: "System", entityId: "not-demo" } });
     await assert.rejects(() => seedDemo(client, password), /no exclusiva/);
     await client.auditLog.delete({ where: { id: foreignAudit.id } });

@@ -210,7 +210,7 @@ async function getOperationalReadiness() {
             ...(vehicle.compartments.some((c) => c.items.some((i) => i.expiresOn && i.expiresOn < today)) ? ["Material con vencimiento superado"] : []),
             ...(vehicle.compartments.some((c) => c.items.some((i) => i.state !== "OK")) ? ["Inventario con materiales pendientes de revision"] : []),
             ...(vehicle.asset.status !== "OPERATIONAL"
-                ? [`Estado ${vehicle.asset.status}`]
+                ? [vehicle.asset.status === "OUT_OF_SERVICE" ? "Fuera de servicio" : vehicle.asset.status === "MAINTENANCE" ? "En mantenimiento" : `Estado ${vehicle.asset.status}`]
                 : []),
             ...(!inspection ? ["Sin control registrado"] : []),
             ...(inspection && hasIssues ? ["Control con novedades"] : []),

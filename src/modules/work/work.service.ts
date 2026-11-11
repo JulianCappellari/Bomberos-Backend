@@ -15,6 +15,8 @@ import { Actor, assertPast, assertWorkTransition, assignWorkSchema, planWorkSche
 const include = { maintenanceJob: { select: { responsibleUserId: true } }, photos: { select: { id: true, submissionRevision: true, createdAt: true }, orderBy: { createdAt: "desc" as const }, take: 30 }, createdBy: { select: PUBLIC_USER_SELECT }, reviewedBy: { select: PUBLIC_USER_SELECT }, members: { include: { user: { select: PUBLIC_USER_SELECT } }, orderBy: { userId: "asc" as const } } };
 export async function activePeople(tx: Prisma.TransactionClient, ids: string[]) {
   if (new Set(ids).size !== ids.length || await tx.user.count({ where: { id: { in: ids }, isActive: true, isPendingApproval: false, deletedAt: null } }) !== ids.length) throw new OperationError(400, "Seleccione personal activo y no repetido");
+  // B01: el administrador tecnico administra el sistema; nunca integra tareas, dotaciones ni servicios.
+  if (await tx.user.count({ where: { id: { in: ids }, profile: { rank: { equals: "Administrador", mode: "insensitive" } } } })) throw new OperationError(400, "El administrador del sistema no realiza tareas ni integra dotaciones; solo las administra");
 }
 function scope(actor: Actor): Prisma.WorkTaskWhereInput {
   return isOperationsManager(actor.role) ? {} : { OR: [{ status: { in: ["ASSIGNED", "RETURNED"] } }, { status: "SUBMITTED", members: { some: { userId: actor.userId } } }] };

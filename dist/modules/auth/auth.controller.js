@@ -13,7 +13,7 @@ async function loginController(req, res) {
     }
     catch (error) {
         return res.status(401).json({
-            message: "Usuario o contrasena incorrectos",
+            message: "Usuario o contraseña incorrectos",
         });
     }
 }
@@ -34,7 +34,7 @@ async function changePasswordController(req, res) {
         const parsed = auth_schemas_1.changePasswordSchema.parse(req.body);
         const userId = req.user?.userId;
         if (!userId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const result = await (0, auth_service_1.changeUserPassword)(userId, parsed.currentPassword, parsed.newPassword);
         return res.status(200).json(result);

@@ -22,6 +22,7 @@
     "test:push": "tsx src/scripts/check-push-api.ts",
     "test:ranking": "tsx src/scripts/check-ranking-api.ts",
     "test:finance": "tsx src/scripts/check-finance-api.ts",
+    "test:station": "tsx src/scripts/check-station-api.ts",
     "test:operations": "tsx src/scripts/check-operations-api.ts",
     "logic:check": "tsx src/scripts/logic-check.ts",
     "test": "tsx --test src/tests/*.test.ts"

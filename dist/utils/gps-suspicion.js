@@ -20,5 +20,5 @@ async function recordGpsSuspicion(tx, userId, attendanceId, context, reasons) {
     if (!reasons.length)
         return;
     await tx.auditLog.create({ data: { actorUserId: userId, action: "PRESENCE_GPS_SUSPICIOUS", entityType: "Attendance", entityId: attendanceId, metadata: { context, reasons } } });
-    await (0, notifications_service_1.notifyCommand)(tx, "Ubicación sospechosa en un registro de presencia", "/audit", `${context}: ${reasons.join("; ")}`, userId);
+    await (0, notifications_service_1.notifyCommand)(tx, "Ubicación sospechosa en un registro de presencia", "/station", `${context}: ${reasons.join("; ")}`, userId);
 }

@@ -138,7 +138,7 @@ export async function getAlertById(alertId: string) {
   });
 
   if (!alert) {
-    throw new Error("Alert not found");
+    throw new Error("Alerta no encontrada");
   }
 
   return alert;
@@ -155,7 +155,7 @@ export async function resolveAlert(alertId: string, actorUserId: string) {
   });
 
   if (!alert) {
-    throw new Error("Alert not found");
+    throw new Error("Alerta no encontrada");
   }
 
   if (alert.status !== "ACTIVE") {
@@ -250,23 +250,10 @@ export async function respondToAlert(alertId: string, userId: string, response: 
     if (!await tx.user.findFirst({ where: { id: userId, deletedAt: null, isActive: true, isPendingApproval: false }, select: { id: true } })) throw new OperationError(403, "Personal no habilitado");
     if (!await isAlertRecipient(tx, alertId, userId)) throw new OperationError(403, "No integra la convocatoria de esta alerta: puede consultarla, pero no responder. Active su disponibilidad para recibirla");
     const previous = await tx.alertResponse.findUnique({ where: { alertId_userId: { alertId, userId } }, include: { user: { select: PUBLIC_USER_SELECT }, alert: true } });
+    // Decision del cuartel: la respuesta Voy / No voy queda fija una vez registrada.
     if (previous) {
       if (previous.response === response) return previous;
-      const updated = await tx.alertResponse.update({
-        where: { id: previous.id },
-        data: { response, respondedAt: new Date() },
-        include: { user: { select: PUBLIC_USER_SELECT }, alert: true },
-      });
-      await tx.auditLog.create({
-        data: {
-          actorUserId: userId,
-          action: "ALERT_RESPONSE_CHANGED",
-          entityType: "Alert",
-          entityId: alertId,
-          metadata: { previousResponse: previous.response, response },
-        },
-      });
-      return updated;
+      throw new OperationError(409, "Tu respuesta ya quedó registrada y no se puede cambiar");
     }
     const result = await tx.alertResponse.create({ data: { alertId, userId, response }, include: { user: { select: PUBLIC_USER_SELECT }, alert: true } });
     await tx.auditLog.create({ data: { actorUserId: userId, action: "ALERT_RESPONDED", entityType: "Alert", entityId: alertId, metadata: { response } } });
@@ -280,7 +267,7 @@ export async function getAlertResponses(alertId: string) {
   });
 
   if (!alert) {
-    throw new Error("Alert not found");
+    throw new Error("Alerta no encontrada");
   }
 
   return prisma.alertResponse.findMany({

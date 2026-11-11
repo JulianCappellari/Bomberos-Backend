@@ -1,0 +1,29 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const node_test_1 = require("node:test");
+const strict_1 = __importDefault(require("node:assert/strict"));
+const fwi_1 = require("../utils/fwi");
+(0, node_test_1.test)("FWI: sequía calurosa y ventosa da riesgo extremo; invierno lluvioso, bajo", () => {
+    const dry = (0, fwi_1.runFwi)(Array.from({ length: 60 }, () => ({ temp: 35, rh: 15, wind: 30, rain: 0, month: 1 })));
+    const wet = (0, fwi_1.runFwi)(Array.from({ length: 60 }, () => ({ temp: 12, rh: 90, wind: 5, rain: 8, month: 7 })));
+    strict_1.default.ok(dry.fwi > 38, `FWI seco ${dry.fwi}`);
+    strict_1.default.equal((0, fwi_1.fwiLevel)(dry.fwi), 4);
+    strict_1.default.ok(wet.fwi < 5.2, `FWI húmedo ${wet.fwi}`);
+    strict_1.default.equal((0, fwi_1.fwiLevel)(wet.fwi), 0);
+    strict_1.default.ok(dry.ffmc > 90 && dry.ffmc <= 101);
+});
+(0, node_test_1.test)("FWI: un día de referencia de Van Wagner queda en el rango publicado", () => {
+    // Ejemplo clásico: FFMC 85, DMC 6, DC 15 y día 17 °C, 42 %, 25 km/h, sin lluvia.
+    const r = (0, fwi_1.runFwi)([{ temp: 17, rh: 42, wind: 25, rain: 0, month: 4 }]);
+    strict_1.default.ok(Math.abs(r.ffmc - 87.7) < 0.3, `FFMC ${r.ffmc}`);
+    strict_1.default.ok(r.isi > 8 && r.isi < 12, `ISI ${r.isi}`);
+});
+(0, node_test_1.test)("Dirección del viento en puntos cardinales", () => {
+    strict_1.default.equal((0, fwi_1.cardinal)(0), "Norte");
+    strict_1.default.equal((0, fwi_1.cardinal)(180), "Sur");
+    strict_1.default.equal((0, fwi_1.cardinal)(225), "Suroeste");
+    strict_1.default.equal((0, fwi_1.cardinal)(359), "Norte");
+});

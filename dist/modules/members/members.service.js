@@ -14,6 +14,7 @@ exports.cancelPeriod = cancelPeriod;
 exports.acknowledgement = acknowledgement;
 exports.acknowledgementHistory = acknowledgementHistory;
 exports.acknowledgementReport = acknowledgementReport;
+const chat_audience_1 = require("../chat/chat-audience");
 const message_fingerprint_1 = require("../../utils/message-fingerprint");
 var message_fingerprint_2 = require("../../utils/message-fingerprint");
 Object.defineProperty(exports, "messageFingerprint", { enumerable: true, get: function () { return message_fingerprint_2.messageFingerprint; } });
@@ -182,6 +183,8 @@ async function acknowledgement(id, actor, expectedHash) {
         const message = await tx.chatMessage.findFirst({ where: { id, deletedAt: null } });
         if (!message)
             throw new operations_schemas_1.OperationError(404, "Mensaje no encontrado");
+        if (message.audience !== "ALL" && message.authorUserId !== actor.userId && !(await (0, chat_audience_1.audienceMemberIds)(tx, message.audience)).includes(actor.userId) && actor.role !== "ADMIN" && actor.role !== "OPERATOR")
+            throw new operations_schemas_1.OperationError(403, "Este mensaje es para otro grupo");
         const contentHash = (0, message_fingerprint_1.messageFingerprint)(message);
         if (expectedHash && expectedHash !== contentHash)
             throw new operations_schemas_1.OperationError(409, "El mensaje fue editado. Lea la version actual antes de confirmar");

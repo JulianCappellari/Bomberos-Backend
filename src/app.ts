@@ -25,6 +25,7 @@ import memberRoutes from "./modules/members/members.routes";
 import pushRoutes from "./modules/push/push.routes";
 import rankingRoutes from "./modules/ranking/ranking.routes";
 import financeRoutes from "./modules/finance/finance.routes";
+import stationRoutes from "./modules/station/station.routes";
 import { env } from "./config/env";
 import { errorHandler } from "./middlewares/errorHandler";
 import { requestAudit } from "./middlewares/request-audit.middleware";
@@ -94,6 +95,7 @@ app.use("/api/members", memberRoutes);
 app.use("/api/push", pushRoutes);
 app.use("/api/ranking", rankingRoutes);
 app.use("/api/finance", financeRoutes);
+app.use("/api/station", stationRoutes);
 app.use("/api", (_req, res) => { res.status(404).json({ message: "Ruta no encontrada" }); });
 
 app.use(errorHandler);

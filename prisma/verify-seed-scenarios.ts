@@ -16,7 +16,11 @@ export async function verifySeedScenarios(client: PrismaClient) {
   assert(qrAttendance.checkInAt! >= qr.createdAt && qrAttendance.checkInAt! <= qr.expiresAt);
   assert.equal(qr.expiresAt.getTime() - qr.createdAt.getTime(), 60000);
   for (const photo of await client.workPhoto.findMany()) assert.equal(photo.sha256, createHash("sha256").update(photo.bytes).digest("hex"));
-  for (const ack of await client.chatAcknowledgement.findMany({ include: { message: true } })) { assert.equal(ack.contentHash, messageFingerprint(ack.message)); assert.equal(ack.bodySnapshot, ack.message.body); assert(ack.acknowledgedAt >= (ack.message.editedAt || ack.message.createdAt)); }
+  for (const ack of await client.chatAcknowledgement.findMany({ include: { message: true } })) {
+    const current = ack.contentHash === messageFingerprint(ack.message);
+    if (current) { assert.equal(ack.bodySnapshot, ack.message.body); assert(ack.acknowledgedAt >= (ack.message.editedAt || ack.message.createdAt)); }
+    else { assert(ack.message.editedAt && ack.acknowledgedAt < ack.message.editedAt); assert.equal(ack.contentHash, messageFingerprint({ ...ack.message, body: ack.bodySnapshot, editedAt: null })); }
+  }
   const tasks = await client.workTask.findMany({ include: { members: true } });
   for (const status of ["ASSIGNED", "SUBMITTED", "RETURNED", "VERIFIED", "CANCELLED"]) assert(tasks.some((t) => t.status === status), `Falta tarea ${status}`);
   for (const task of tasks.filter((t) => t.reviewedByUserId)) assert(!task.members.some((m) => m.userId === task.reviewedByUserId), "Verificacion propia de tarea");
@@ -43,7 +47,8 @@ export async function verifySeedScenarios(client: PrismaClient) {
     if (document.incident?.closedAt) assert(document.publishedAt >= document.incident.closedAt);
   }
   const notices = await client.dispatchNotice.findMany({ include: { alert: true } });
-  assert.equal(notices.length, 4);
+  assert(notices.length >= 5);
+  for (const state of ["pending", "corrected", "cancelled", "activated"]) assert(notices.some(n => n.id === `demo_v2_current_notice_${state}`));
   for (const notice of notices) {
     assert(!(notice.cancelledAt && notice.alertId));
     if (notice.alert) assert(notice.receivedAt <= notice.alert.createdAt);
@@ -58,7 +63,7 @@ export async function verifySeedScenarios(client: PrismaClient) {
     assert(permit.validUntil <= permit.license.expiresOn!);
   }
   const claims = await client.expenseClaim.findMany({ include: { approvals: true, payments: true } });
-  assert.equal(claims.length, 6);
+  assert(claims.length >= 8);
   for (const claim of claims) {
     assert(claim.amountCents > 0);
     assert(claim.payments.filter(p => !p.reversedAt).reduce((sum, p) => sum + p.amountCents, 0) <= claim.amountCents);

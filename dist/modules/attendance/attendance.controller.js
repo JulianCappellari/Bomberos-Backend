@@ -25,7 +25,7 @@ async function scanAttendanceQrController(req, res) {
     try {
         const userId = req.user?.userId;
         if (!userId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const parsed = attendance_schemas_1.scanAttendanceQrSchema.parse(req.body);
         const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
@@ -53,7 +53,7 @@ async function getMyOpenAttendanceController(req, res) {
     try {
         const userId = req.user?.userId;
         if (!userId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const attendance = await (0, attendance_service_1.getMyOpenAttendance)(userId);
         return res.status(200).json(attendance);
@@ -79,7 +79,7 @@ async function getMyAttendancesController(req, res) {
     try {
         const userId = req.user?.userId;
         if (!userId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const attendances = await (0, attendance_service_1.getMyAttendances)(userId);
         return res.status(200).json(attendances);
@@ -94,7 +94,7 @@ async function getMyAttendanceSummaryController(req, res) {
     try {
         const userId = req.user?.userId;
         if (!userId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
         }
         const summary = await (0, attendance_service_1.getMyAttendanceSummary)(userId);
         return res.status(200).json(summary);

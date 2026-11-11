@@ -1,3 +1,4 @@
+import { audienceMemberIds } from "../chat/chat-audience";
 import { messageFingerprint } from "../../utils/message-fingerprint";
 export { messageFingerprint } from "../../utils/message-fingerprint";
 import { z } from "zod";
@@ -149,6 +150,7 @@ export async function acknowledgement(id: string, actor: Actor, expectedHash?: s
     await tx.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${id} FOR UPDATE`;
     const message = await tx.chatMessage.findFirst({ where: { id, deletedAt: null } });
     if (!message) throw new OperationError(404, "Mensaje no encontrado");
+    if (message.audience !== "ALL" && message.authorUserId !== actor.userId && !(await audienceMemberIds(tx, message.audience)).includes(actor.userId) && actor.role !== "ADMIN" && actor.role !== "OPERATOR") throw new OperationError(403, "Este mensaje es para otro grupo");
     const contentHash = messageFingerprint(message);
     if (expectedHash && expectedHash !== contentHash) throw new OperationError(409, "El mensaje fue editado. Lea la version actual antes de confirmar");
     if (expectedHash) {

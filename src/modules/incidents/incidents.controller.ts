@@ -27,7 +27,7 @@ export async function dispatchIncidentFromAlertController(
   try {
     const actorUserId = req.user?.userId;
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = dispatchAlertSchema.parse(req.body);
@@ -50,7 +50,7 @@ export async function createIncidentController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = createIncidentSchema.parse(req.body);
@@ -93,7 +93,7 @@ export async function getIncidentByIdController(req: Request, res: Response) {
     return res.status(200).json(incident);
   } catch (error: any) {
     return res.status(404).json({
-      message: error.message || "Incident not found",
+      message: error.message || "Intervención no encontrada",
     });
   }
 }
@@ -119,7 +119,7 @@ export async function closeIncidentController(req: Request, res: Response) {
     const actorUserId = req.user?.userId;
 
     if (!actorUserId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     }
 
     const parsed = closeIncidentSchema.parse(req.body);
@@ -155,7 +155,7 @@ export async function assignUsersToIncidentController(req: Request, res: Respons
 export async function createIncidentUpdateController(req: Request, res: Response) {
   try {
     const actorUserId = req.user?.userId;
-    if (!actorUserId) return res.status(401).json({ message: "Unauthorized" });
+    if (!actorUserId) return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     const parsed = createIncidentUpdateSchema.parse(req.body);
     return res.status(201).json(
       await createIncidentUpdate(String(req.params.id), actorUserId, parsed.body),
@@ -168,7 +168,7 @@ export async function createIncidentUpdateController(req: Request, res: Response
 export async function deleteIncidentUpdateController(req: Request, res: Response) {
   try {
     const actorUserId = req.user?.userId;
-    if (!actorUserId) return res.status(401).json({ message: "Unauthorized" });
+    if (!actorUserId) return res.status(401).json({ message: "Sesión no válida. Volvé a ingresar." });
     return res.status(200).json(
       await deleteIncidentUpdate(
         String(req.params.id),

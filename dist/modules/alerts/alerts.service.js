@@ -127,7 +127,7 @@ async function getAlertById(alertId) {
         },
     });
     if (!alert) {
-        throw new Error("Alert not found");
+        throw new Error("Alerta no encontrada");
     }
     return alert;
 }
@@ -141,7 +141,7 @@ async function resolveAlert(alertId, actorUserId) {
         },
     });
     if (!alert) {
-        throw new Error("Alert not found");
+        throw new Error("Alerta no encontrada");
     }
     if (alert.status !== "ACTIVE") {
         throw new Error("Only active alerts can be resolved");
@@ -233,24 +233,11 @@ async function respondToAlert(alertId, userId, response) {
         if (!await (0, alert_notifications_1.isAlertRecipient)(tx, alertId, userId))
             throw new operations_schemas_1.OperationError(403, "No integra la convocatoria de esta alerta: puede consultarla, pero no responder. Active su disponibilidad para recibirla");
         const previous = await tx.alertResponse.findUnique({ where: { alertId_userId: { alertId, userId } }, include: { user: { select: public_user_1.PUBLIC_USER_SELECT }, alert: true } });
+        // Decision del cuartel: la respuesta Voy / No voy queda fija una vez registrada.
         if (previous) {
             if (previous.response === response)
                 return previous;
-            const updated = await tx.alertResponse.update({
-                where: { id: previous.id },
-                data: { response, respondedAt: new Date() },
-                include: { user: { select: public_user_1.PUBLIC_USER_SELECT }, alert: true },
-            });
-            await tx.auditLog.create({
-                data: {
-                    actorUserId: userId,
-                    action: "ALERT_RESPONSE_CHANGED",
-                    entityType: "Alert",
-                    entityId: alertId,
-                    metadata: { previousResponse: previous.response, response },
-                },
-            });
-            return updated;
+            throw new operations_schemas_1.OperationError(409, "Tu respuesta ya quedó registrada y no se puede cambiar");
         }
         const result = await tx.alertResponse.create({ data: { alertId, userId, response }, include: { user: { select: public_user_1.PUBLIC_USER_SELECT }, alert: true } });
         await tx.auditLog.create({ data: { actorUserId: userId, action: "ALERT_RESPONDED", entityType: "Alert", entityId: alertId, metadata: { response } } });
@@ -262,7 +249,7 @@ async function getAlertResponses(alertId) {
         where: { id: alertId },
     });
     if (!alert) {
-        throw new Error("Alert not found");
+        throw new Error("Alerta no encontrada");
     }
     return prisma_1.prisma.alertResponse.findMany({
         where: { alertId },

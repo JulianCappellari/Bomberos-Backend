@@ -11,7 +11,7 @@ export const createAlertSchema = z.object({
     "OTHER",
   ]),
   priority: z.enum(["HIGH", "MEDIUM", "LOW"]),
-  location: z.string().min(4, "Location is required"),
+  location: z.string().trim().min(4, "Indicá una dirección o referencia de al menos 4 caracteres"),
   description: z.string().trim().min(1, "La descripción es obligatoria"),
   contactPhone: z.string().optional(),
 });

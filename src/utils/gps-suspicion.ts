@@ -14,5 +14,5 @@ export function gpsSuspicionReasons(input: { latitude: number; longitude: number
 export async function recordGpsSuspicion(tx: Prisma.TransactionClient, userId: string, attendanceId: string, context: string, reasons: string[]) {
   if (!reasons.length) return;
   await tx.auditLog.create({ data: { actorUserId: userId, action: "PRESENCE_GPS_SUSPICIOUS", entityType: "Attendance", entityId: attendanceId, metadata: { context, reasons } } });
-  await notifyCommand(tx, "Ubicación sospechosa en un registro de presencia", "/audit", `${context}: ${reasons.join("; ")}`, userId);
+  await notifyCommand(tx, "Ubicación sospechosa en un registro de presencia", "/station", `${context}: ${reasons.join("; ")}`, userId);
 }

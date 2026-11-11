@@ -370,7 +370,7 @@ async function getDashboardSummary(userId, role) {
                 {
                     code: "SHIFT_WITHOUT_STAFF",
                     severity: "HIGH",
-                    message: `${todayShiftsWithoutStaff} guardia(s) de hoy no tienen personal asignado.`,
+                    message: todayShiftsWithoutStaff === 1 ? "Una guardia de hoy no tiene personal asignado." : `${todayShiftsWithoutStaff} guardias de hoy no tienen personal asignado.`,
                     href: "/calendar",
                 },
             ]
@@ -380,7 +380,7 @@ async function getDashboardSummary(userId, role) {
                 {
                     code: "ACTIVE_ALERT_WITHOUT_RESPONSES",
                     severity: "MEDIUM",
-                    message: `${activeAlertsWithoutResponses} alerta(s) activas todavia no tienen respuestas.`,
+                    message: activeAlertsWithoutResponses === 1 ? "Una alerta activa todavía no tiene respuestas." : `${activeAlertsWithoutResponses} alertas activas todavía no tienen respuestas.`,
                     href: "/alerts",
                 },
             ]
@@ -390,7 +390,7 @@ async function getDashboardSummary(userId, role) {
                 {
                     code: "VEHICLE_CONTROLS_ATTENTION",
                     severity: "MEDIUM",
-                    message: `${vehicleControlsRequiringAttention.length} vehiculo(s) requieren revisar controles.`,
+                    message: vehicleControlsRequiringAttention.length === 1 ? "Un móvil necesita revisar su control semanal." : `${vehicleControlsRequiringAttention.length} móviles necesitan revisar su control semanal.`,
                     href: "/equipment",
                 },
             ]
@@ -400,7 +400,7 @@ async function getDashboardSummary(userId, role) {
                 {
                     code: "COMPLIANCE_ATTENTION",
                     severity: "MEDIUM",
-                    message: `${complianceRequiringAttention} vencimiento(s) requieren atencion.`,
+                    message: complianceRequiringAttention === 1 ? "Un vencimiento requiere atención." : `${complianceRequiringAttention} vencimientos requieren atención.`,
                     href: "/compliance",
                 },
             ]

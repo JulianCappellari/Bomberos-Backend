@@ -1,11 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.incidentSheetContext = incidentSheetContext;
 exports.finalizeSheet = finalizeSheet;
 const express_1 = require("express");
 const zod_1 = require("zod");
 const prisma_1 = require("../../config/prisma");
 const transaction_1 = require("../../utils/transaction");
-const require_qr_presence_1 = require("../../utils/require-qr-presence");
+const incident_access_1 = require("./incident-access");
 const public_user_1 = require("../../utils/public-user");
 const operations_schemas_1 = require("../operations/operations.schemas");
 const reports_service_1 = require("../operations/reports.service");
@@ -22,12 +23,14 @@ const form = zod_1.z.object({
         return false;
     } })).max(5).refine(unique),
 }).strict();
-async function context(tx, id, until) {
-    const incident = await tx.incident.findUnique({ where: { id }, select: { id: true, title: true, type: true, description: true, location: true, occurredAt: true, status: true, voidedAt: true, voidReason: true, replacesIncidentId: true,
+async function incidentSheetContext(tx, id, until) {
+    const incident = await tx.incident.findUnique({ where: { id }, select: { id: true, title: true, type: true, description: true, location: true, occurredAt: true, closedAt: true, status: true, voidedAt: true, voidReason: true, replacesIncidentId: true,
             alert: { select: { id: true, createdAt: true, contactPhone: true, createdBy: { select: { username: true, profile: { select: { fullName: true } } } }, originNotice: { select: { source: true, phone: true, receivedAt: true } }, responses: { where: { response: "GOING" }, select: { id: true, userId: true, attendanceOutcome: true } } } },
             movements: { orderBy: { departedAt: "asc" }, select: { id: true, asset: { select: { name: true, status: true } }, driverUserId: true, leaderUserId: true, departedAt: true, arrivedAt: true, returnedAt: true, returnWithoutArrivalReason: true, dispatchExceptionReason: true, departure: { select: { voidedAt: true } }, crew: { select: { userId: true, user: { select: public_user_1.PUBLIC_USER_SELECT } } } } } } });
     if (!incident)
         throw new operations_schemas_1.OperationError(404, "Intervención no encontrada");
+    if (incident.closedAt && incident.closedAt < until)
+        until = incident.closedAt;
     const people = await tx.attendance.findMany({ where: { checkInQrId: { not: null }, checkInAt: { lt: until }, checkInTrust: { not: "REJECTED" }, OR: [{ checkOutAt: { gt: incident.occurredAt } }, { status: "OPEN" }] }, select: { userId: true, checkInAt: true, checkOutAt: true, user: { select: { username: true, profile: { select: { fullName: true } } } } } });
     const missions = people.length ? await tx.missionCrew.findMany({ where: { userId: { in: people.map(p => p.userId) }, movement: { departedAt: { lt: until }, OR: [{ returnedAt: null }, { returnedAt: { gt: incident.occurredAt } }] } }, select: { userId: true, movement: { select: { departedAt: true, returnedAt: true } } } }) : [];
     const base = new Map();
@@ -50,7 +53,7 @@ async function context(tx, id, until) {
     return { incident, baseCandidates: [...base].map(([id, name]) => ({ id, name })) };
 }
 async function finalizeSheet(tx, id, now, actor) {
-    const data = await context(tx, id, now);
+    const data = await incidentSheetContext(tx, id, now);
     let sheet = await tx.incidentSheet.findUnique({ where: { incidentId: id } });
     // G13: con los moviles retornados la intervencion puede finalizarse aunque falten datos;
     // lo pendiente se completa despues mediante anexos (G18).
@@ -61,26 +64,24 @@ async function finalizeSheet(tx, id, now, actor) {
     if (staleBase.length)
         throw new operations_schemas_1.OperationError(409, "La presencia en base cambió; revise la planilla");
     const participants = new Set([...sheet.baseUserIds, ...data.incident.movements.filter(m => m.returnedAt && m.departure && !m.departure.voidedAt).flatMap(m => m.crew.map(c => c.userId))]);
-    // F08: sin planilla cargada no hay base para afirmar una inasistencia; no se marca "No asistio".
-    const noShows = dataPending ? [] : data.incident.alert?.responses.filter(r => !participants.has(r.userId) && r.attendanceOutcome === null) || [];
+    // Decision del cuartel: quien respondio "Voy" y no figura en una dotacion retornada ni en el
+    // personal en base pierde esa respuesta, como si nunca la hubiera dado. Queda constancia en auditoria.
+    // Sin planilla guardada no hay base para afirmar la inasistencia, asi que no se borra nada.
+    const noShows = dataPending ? [] : data.incident.alert?.responses.filter(r => !participants.has(r.userId)) || [];
     const notCredited = noShows.map(r => r.userId);
     if (data.incident.alert && noShows.length) {
-        const recordedAt = now;
-        const changed = await tx.alertResponse.updateMany({
-            where: { alertId: data.incident.alert.id, userId: { in: notCredited }, response: "GOING", attendanceOutcome: null },
-            data: { attendanceOutcome: "NO_SHOW", attendanceOutcomeAt: recordedAt },
-        });
-        if (changed.count) {
+        const removed = await tx.alertResponse.deleteMany({ where: { id: { in: noShows.map(r => r.id) }, response: "GOING" } });
+        if (removed.count) {
             await tx.auditLog.createMany({ data: noShows.map(response => ({
                     actorUserId: actor,
-                    action: "ALERT_NO_SHOW_RECORDED",
-                    entityType: "AlertResponse",
-                    entityId: response.id,
-                    metadata: { alertId: data.incident.alert.id, incidentId: id, userId: response.userId, outcome: "NO_SHOW", recordedAt: recordedAt.toISOString() },
+                    action: "ALERT_GOING_REMOVED_NO_SHOW",
+                    entityType: "Alert",
+                    entityId: data.incident.alert.id,
+                    metadata: { alertId: data.incident.alert.id, incidentId: id, userId: response.userId, removedResponse: "GOING", recordedAt: now.toISOString() },
                 })) });
         }
     }
-    await tx.incidentSheet.update({ where: { incidentId: id }, data: { finalizedAt: now, revision: { increment: 1 }, finalContext: JSON.parse(JSON.stringify({ ...data, incident: { ...data.incident, status: "CLOSED" }, notCredited, dataPending })) } });
+    await tx.incidentSheet.update({ where: { incidentId: id }, data: { finalizedAt: now, revision: { increment: 1 }, finalContext: JSON.parse(JSON.stringify({ ...data, incident: { ...data.incident, status: "CLOSED", closedAt: now }, notCredited, dataPending })) } });
     await tx.auditLog.create({ data: { actorUserId: actor, action: "INCIDENT_SHEET_FINALIZED", entityType: "Incident", entityId: id, metadata: { sheetAuthor: sheet.authorId, participants: [...participants], unconfirmedGoing: notCredited, dataPending } } });
 }
 const router = (0, express_1.Router)({ mergeParams: true });
@@ -88,33 +89,25 @@ router.get("/", async (req, res) => {
     const { id } = zod_1.z.object({ id: zod_1.z.string().min(1) }).parse(req.params), actor = req.user;
     res.json(await prisma_1.prisma.$transaction(async (tx) => {
         const sheet = await tx.incidentSheet.findUnique({ where: { incidentId: id }, include: { author: { select: { username: true } } } });
-        const present = Boolean(await tx.attendance.findFirst({ where: { userId: actor.userId, status: "OPEN", checkInQrId: { not: null }, checkInAt: { lte: new Date() }, checkInTrust: { not: "REJECTED" }, user: { missionCrew: { none: { movement: { returnedAt: null } } } } }, select: { id: true } }));
-        if (!["ADMIN", "OPERATOR", "GUARD"].includes(actor.role) && sheet?.authorId !== actor.userId && !present) {
-            if (sheet)
-                throw new operations_schemas_1.OperationError(403, "Planilla reservada al autor y a los responsables");
-            if (!present)
-                throw new operations_schemas_1.OperationError(403, "Para completar una planilla debe ingresar al cuartel por QR");
-        }
+        const mayWrite = await (0, incident_access_1.canWriteIncident)(tx, actor);
         if (sheet?.finalizedAt) {
             const state = await tx.incident.findUniqueOrThrow({ where: { id }, select: { voidedAt: true, voidReason: true, replacesIncidentId: true } });
             sheet.finalContext = { ...sheet.finalContext, incident: { ...(sheet.finalContext.incident), ...state } };
             const amendments = await tx.auditLog.findMany({ where: { entityType: "Incident", entityId: id, action: "INCIDENT_SHEET_AMENDED" }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true, createdAt: true, metadata: true, actor: { select: { username: true } } } });
             const notebookEntries = await tx.incidentNotebookEntry.findMany({ where: { incidentId: id, deletedAt: null }, include: { author: { select: public_user_1.PUBLIC_USER_SELECT } }, orderBy: [{ occurredAt: "asc" }, { id: "asc" }], take: 500 });
-            return { sheet, context: sheet.finalContext, canWrite: false, canAddAnnex: present, amendments, notebookEntries };
+            return { sheet, context: sheet.finalContext, canWrite: false, canAddAnnex: mayWrite, amendments, notebookEntries };
         }
-        const current = await context(tx, id, new Date());
-        if (current.incident.status !== "OPEN")
-            throw new operations_schemas_1.OperationError(404, "Esta intervención histórica no tiene planilla digital");
+        const current = await incidentSheetContext(tx, id, new Date());
         const notebookEntries = await tx.incidentNotebookEntry.findMany({ where: { incidentId: id, deletedAt: null }, include: { author: { select: public_user_1.PUBLIC_USER_SELECT } }, orderBy: [{ occurredAt: "asc" }, { id: "asc" }], take: 500 });
-        return { sheet, context: current, canWrite: present, canAddAnnex: false, notebookEntries };
+        return { sheet, context: current, canWrite: current.incident.status === "OPEN" && mayWrite, canAddAnnex: current.incident.status === "CLOSED" && mayWrite, notebookEntries };
     }, { isolationLevel: "RepeatableRead" }));
 });
 router.put("/", async (req, res) => {
     const { id } = zod_1.z.object({ id: zod_1.z.string().min(1) }).parse(req.params), actor = req.user, { revision, ...data } = form.parse(req.body);
     res.json(await (0, transaction_1.serializable)(async (tx) => {
         await tx.$queryRaw `SELECT "id" FROM "Incident" WHERE "id" = ${id} FOR UPDATE`;
-        await (0, require_qr_presence_1.requireQrPresence)(tx, actor.userId);
-        const snapshot = await context(tx, id, new Date());
+        await (0, incident_access_1.requireIncidentWrite)(tx, actor);
+        const snapshot = await incidentSheetContext(tx, id, new Date());
         if (snapshot.incident.status !== "OPEN")
             throw new operations_schemas_1.OperationError(409, "La intervención está cerrada");
         const old = await tx.incidentSheet.findUnique({ where: { incidentId: id } });

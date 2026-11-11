@@ -34,14 +34,14 @@ async function loginUser(username, password, userAgent) {
     const user = await prisma_1.prisma.user.findUnique({ where: { username }, include: { profile: true } });
     const matches = await bcrypt_1.default.compare(password, user?.passwordHash || await dummyHash);
     if (!user || !matches || user.deletedAt || !user.isActive || user.isPendingApproval)
-        throw new Error("Usuario o contrasena incorrectos");
+        throw new Error("Usuario o contraseña incorrectos");
     return (0, transaction_1.serializable)(async (tx) => {
         const current = await tx.user.findFirst({
             where: { id: user.id, passwordHash: user.passwordHash, deletedAt: null, isActive: true, isPendingApproval: false },
             include: { profile: true },
         });
         if (!current)
-            throw new Error("Usuario o contrasena incorrectos");
+            throw new Error("Usuario o contraseña incorrectos");
         const sessionId = (0, node_crypto_1.randomUUID)();
         const payload = { userId: current.id, role: current.role, sessionId };
         const accessToken = (0, jwt_1.signAccessToken)(payload);
