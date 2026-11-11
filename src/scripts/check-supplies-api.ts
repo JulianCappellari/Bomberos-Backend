@@ -133,6 +133,23 @@ async function main() {
     await call(`/alerts/${alert.id}/respond`, 200, bombero, "POST", { response: "GOING" });
     assert(!(await prisma.memberNotification.findFirst({ where: { userId: boardUser!.id, dedupeKey: { startsWith: `alert` } } })), "La Comisión Directiva (civil) no es convocada");
 
+    // --- ¿Me llegan las alertas al celular? Motivo visible y arreglo en un toque ---
+    assert.equal((await call("/push/alert-readiness", 200, bombero)).status, "YES");
+    assert.equal((await call("/push/alert-readiness", 200, guard)).status, "INFO");
+    assert.equal((await call("/push/alert-readiness", 200, board)).status, "NONE");
+    await prisma.user.update({ where: { id: keeperUser!.id }, data: { emergencyStatusConfirmedAt: null } });
+    const notReady = await call("/push/alert-readiness", 200, keeper);
+    assert.equal(notReady.status, "NONE"); assert.equal(notReady.canFix, true);
+    await call("/members/availability/available-now", 200, keeper, "POST");
+    assert.equal((await call("/push/alert-readiness", 200, keeper)).status, "YES");
+    assert(await prisma.memberNotification.findFirst({ where: { userId: keeperUser!.id, dedupeKey: `alert:${alert.id}:${keeperUser!.id}` } }), "Al marcarse disponible recibe la alerta activa");
+
+    // --- La alerta deja de pedir confirmación al cerrarse la planilla de su intervención ---
+    const linked = await call(`/incidents/from-alert/${alert.id}`, 201, officer, "POST", {});
+    await call(`/incidents/${linked.id}/close`, 200, officer, "PATCH", { closingReport: "Incendio controlado, sin novedades." });
+    assert.equal((await prisma.alert.findUniqueOrThrow({ where: { id: alert.id } })).status, "RESOLVED", "Cerrar la planilla desactiva la alerta");
+    await call(`/alerts/${alert.id}/respond`, 409, keeper, "POST", { response: "GOING" });
+
     // --- Constancia de intervención: pedido de auxilio N° y datos del papel ---
     const year = Number(new Intl.DateTimeFormat("en", { year: "numeric", timeZone: "America/Argentina/Buenos_Aires" }).format(new Date()));
     const first = await prisma.incident.create({ data: { title: "Pérdida de gas", type: "OTHER", description: "Garrafa", location: "Belgrano", createdByUserId: users[1]!.id } });

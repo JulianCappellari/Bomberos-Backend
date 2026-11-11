@@ -59,7 +59,14 @@ async function main() {
     const captured: Array<{ payload: string; options: webpush.RequestOptions }> = [];
     const sender = async (_sub: webpush.PushSubscription, payload: string, options: webpush.RequestOptions) => { attempts++; captured.push({ payload, options }); };
     await Promise.all([deliverPush(sender), deliverPush(sender)]); assert.equal(attempts, 2); assert.equal(captured.length, 1);
-    assert(!captured[0]!.payload.includes("Prueba")); assert.equal(captured[0]!.options.urgency, "normal");
+    // El aviso lleva un texto claro segun su tipo (titulo y ruta propia de la app).
+    const sent = JSON.parse(captured[0]!.payload);
+    assert.equal(sent.title, "Prueba de notificaciones"); assert.equal(sent.href, "/notifications"); assert.equal(captured[0]!.options.urgency, "normal");
+    const { pushContent } = await import("../modules/push/push-job");
+    const medical = pushContent({ title: "x", body: null, href: "/alerts", dedupeKey: "alert:a:u" }, { type: "MEDICAL", priority: "HIGH", location: "Belgrano 1250" });
+    assert.equal(medical.title, "Emergencia médica · prioridad alta"); assert(medical.body.startsWith("Belgrano 1250")); assert(!JSON.stringify(medical).includes("descripcion"));
+    assert.equal(pushContent({ title: "x", body: null, href: "/alerts", dedupeKey: "alert-guard:a:u" }, { type: "FIRE", priority: "LOW", location: "Centro" }).title, "Alerta emitida: Incendio");
+    assert.equal(pushContent({ title: "Mensaje", body: "Hola\nsegunda línea", href: "https://evil.example", dedupeKey: null }).href, "/notifications");
     await deliverPush(sender); assert.equal(attempts, 2);
     const session = await prisma.authSession.findFirstOrThrow({ where: { userId: users[0]!.id } });
     const actor = { userId: users[0]!.id, sessionId: session.id };
@@ -74,7 +81,8 @@ async function main() {
     await prisma.memberNotification.deleteMany({ where: { title: "Backlog sintetico para prueba de prioridad" } });
     assert.equal(await deliverPush(sender), 2);
     const urgent = captured.slice(-2); assert(urgent.every(r => r.options.urgency === "high" && Number(r.options.TTL) <= 900));
-    assert(!JSON.stringify(urgent).includes("Ubicacion privada"));
+    // La convocatoria muestra tipo, prioridad y direccion (lo necesario para salir), nunca la descripcion.
+    assert(urgent.every(r => { const p = JSON.parse(r.payload); return p.title === "Incendio · prioridad alta" && p.body.startsWith("Ubicacion privada de prueba") && p.href === "/alerts"; }));
     const cancelled = await createAlert({ type: "FIRE", priority: "LOW", location: "Aviso cancelado", createdByUserId: users[0]!.id });
     await queuePush(); await prisma.alert.update({ where: { id: cancelled.id }, data: { status: "CANCELLED" } });
     assert.equal(await deliverPush(sender), 0); assert.equal(await prisma.pushDelivery.count({ where: { errorCode: "ALERT_NOT_ACTIVE" } }), 2);

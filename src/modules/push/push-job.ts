@@ -4,6 +4,22 @@ import { prisma } from "../../config/prisma";
 import { pushConfiguration } from "./push.service";
 import { pushPolicy, retryDelay, trustedPushEndpoint } from "./push.schemas";
 
+// Texto del aviso en el celular: claro y corto, segun el tipo. Nunca incluye descripciones de la
+// emergencia (pueden tener datos medicos o personales): solo tipo, prioridad y direccion.
+const ALERT_LABELS: Record<string, string> = { FIRE: "Incendio", RESCUE: "Rescate", ACCIDENT: "Accidente", CHEMICAL: "Riesgo químico", MEDICAL: "Emergencia médica", FLOOD: "Inundación", OTHER: "Emergencia" };
+const PRIORITY_LABELS: Record<string, string> = { HIGH: "prioridad alta", MEDIUM: "prioridad media", LOW: "prioridad baja" };
+const clip = (value: string, max: number) => { const clean = value.replace(/\s+/g, " ").trim(); return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean; };
+export function pushContent(notification: { title: string; body: string | null; href: string; dedupeKey: string | null }, alert?: { type: string; priority: string; location: string } | null) {
+  const safeHref = notification.href.startsWith("/") && !notification.href.startsWith("//") ? notification.href.slice(0, 200) : "/notifications";
+  if (alert) {
+    const kind = ALERT_LABELS[alert.type] ?? "Emergencia", place = clip(alert.location, 90);
+    if (/^alert-(command|guard):/.test(notification.dedupeKey ?? "")) return { title: `Alerta emitida: ${kind}`, body: `${place} · Aviso informativo, no hace falta confirmar.`, href: "/alerts" };
+    return { title: `${kind} · ${PRIORITY_LABELS[alert.priority] ?? "alerta"}`, body: `${place} · Respondé si vas.`, href: "/alerts" };
+  }
+  const detail = notification.body ? clip(notification.body.split("\n")[0] ?? "", 160) : "";
+  return { title: clip(notification.title, 80), body: detail || "Tocá para ver el detalle.", href: safeHref };
+}
+
 type Sender = (subscription: webpush.PushSubscription, payload: string, options: webpush.RequestOptions) => Promise<unknown>;
 // A committed notification is the source of truth; no network requests happen inside business transactions.
 export async function queuePush(now = new Date()) {
@@ -40,18 +56,19 @@ export async function deliverPush(sender: Sender = webpush.sendNotification, now
     let priority: string | null = null;
     const elapsed = Date.now() - notification.createdAt.getTime();
     let code: string | null = null;
+    let activeAlert: { type: string; priority: string; location: string } | null = null;
     if (notification.readAt || notification.userId !== subscription.userId || subscription.session.userId !== subscription.userId || subscription.session.revokedAt || subscription.session.expiresAt <= checkedAt || !subscription.user.isActive || subscription.user.isPendingApproval || subscription.user.deletedAt || subscription.user.mustChangePassword) code = "INACTIVE_OR_READ";
     else if (elapsed >= policy.maxAgeMs) code = "EXPIRED";
     else if (!trustedPushEndpoint(subscription.endpoint)) code = "INVALID_ENDPOINT";
     else if (policy.alert) {
       const match = notification.dedupeKey?.match(/^alert(?:-command|-guard)?:([^:]+):/);
-      const alert = match ? await prisma.alert.findFirst({ where: { id: match[1]!, status: "ACTIVE" }, select: { priority: true } }) : null;
-      if (!alert) code = "ALERT_NOT_ACTIVE"; else priority = alert.priority;
+      const alert = match ? await prisma.alert.findFirst({ where: { id: match[1]!, status: "ACTIVE" }, select: { priority: true, type: true, location: true } }) : null;
+      if (!alert) code = "ALERT_NOT_ACTIVE"; else { priority = alert.priority; activeAlert = alert; }
     }
     if (code) { await prisma.pushDelivery.updateMany({ where: { id: row.id }, data: { finishedAt: now, leaseUntil: null, errorCode: code } }); return; }
     try {
       // Lock-screen content is deliberately generic, including for medical incidents and personal reminders.
-      await sender({ endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, JSON.stringify({ version: 1, id: notification.id, alert: policy.alert, priority, expiresAt: notification.createdAt.getTime() + policy.maxAgeMs }), { vapidDetails: config, TTL: Math.max(1, Math.floor((policy.maxAgeMs - elapsed) / 1000)), urgency: priority === "HIGH" ? "high" : "normal", timeout: 8000 });
+      await sender({ endpoint: subscription.endpoint, keys: { p256dh: subscription.p256dh, auth: subscription.auth } }, JSON.stringify({ version: 1, id: notification.id, alert: policy.alert, priority, expiresAt: notification.createdAt.getTime() + policy.maxAgeMs, ...pushContent(notification, activeAlert) }), { vapidDetails: config, TTL: Math.max(1, Math.floor((policy.maxAgeMs - elapsed) / 1000)), urgency: priority === "HIGH" ? "high" : "normal", timeout: 8000 });
       await prisma.pushDelivery.updateMany({ where: { id: row.id }, data: { deliveredAt: new Date(), finishedAt: new Date(), leaseUntil: null, errorCode: null } });
       sent++;
     } catch (error) {
