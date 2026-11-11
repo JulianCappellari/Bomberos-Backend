@@ -10,6 +10,7 @@ import { OperationError } from "../operations/operations.schemas";
 import { Actor } from "../work/work.schemas";
 import { declarationEditSchema, declarationSchema, periodSchema, personalProfileSchema } from "./members.schemas";
 import { stationDate } from "../../utils/station-time";
+import { lockRow } from "../../utils/database-schema";
 import {operationalStatus} from "./operational-availability";
 import { notifyAlert } from "../alerts/alert-notifications";
 import { notifyCommand } from "./notifications.service";
@@ -147,7 +148,7 @@ export async function cancelPeriod(id: string | null, actor: Actor) {
 export async function acknowledgement(id: string, actor: Actor, expectedHash?: string) {
   return serializable(async (tx) => {
     // Lock the message so acknowledgement cannot race an edit or withdrawal.
-    await tx.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${id} FOR UPDATE`;
+    await lockRow(tx, "ChatMessage", id);
     const message = await tx.chatMessage.findFirst({ where: { id, deletedAt: null } });
     if (!message) throw new OperationError(404, "Mensaje no encontrado");
     if (message.audience !== "ALL" && message.authorUserId !== actor.userId && !(await audienceMemberIds(tx, message.audience)).includes(actor.userId) && actor.role !== "ADMIN" && actor.role !== "OPERATOR") throw new OperationError(403, "Este mensaje es para otro grupo");

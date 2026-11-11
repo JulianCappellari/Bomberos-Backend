@@ -4,6 +4,7 @@ import { serializable } from "../../utils/transaction";
 import { disconnectUser } from "../../config/socket";
 import { OperationError } from "../operations/operations.schemas";
 import { LOCK_MINUTES, MAX_FAILED_LOGINS } from "../auth/auth.service";
+import { databaseSchema } from "../../utils/database-schema";
 
 type Actor = { userId: string; role: string };
 // Acciones que interesan a la seguridad del sistema y a la deteccion de fraude.
@@ -27,7 +28,7 @@ export async function securityOverview(actor: Actor) {
     prisma.user.findMany({ where: { lockedUntil: { gt: now } }, select: { id: true, username: true, lockedUntil: true, profile: { select: { fullName: true } } } }),
     prisma.auditLog.findMany({ where: { action: { in: [...SECURITY_ACTIONS] }, createdAt: { gt: since } }, orderBy: { createdAt: "desc" }, take: 150, include: { actor: { select: { username: true, profile: { select: { fullName: true } } } } } }),
     prisma.auditLog.groupBy({ by: ["action"], where: { action: { in: [...SECURITY_ACTIONS] }, createdAt: { gt: since } }, _count: { _all: true } }),
-    prisma.$queryRaw<Array<{ tgname: string }>>`SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND c.relname = 'AuditLog' AND t.tgname IN ('audit_log_append_only', 'audit_log_no_truncate') AND NOT t.tgisinternal AND t.tgenabled <> 'D'`,
+    prisma.$queryRaw<Array<{ tgname: string }>>`SELECT t.tgname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ${databaseSchema} AND c.relname = 'AuditLog' AND t.tgname IN ('audit_log_append_only', 'audit_log_no_truncate') AND NOT t.tgisinternal AND t.tgenabled <> 'D'`,
     prisma.authSession.groupBy({ by: ["userId"], where: { revokedAt: null, expiresAt: { gt: now } }, _count: { _all: true } }),
   ]);
   // Nombre de la persona afectada cuando la entidad es un usuario (intentos fallidos, bloqueos).

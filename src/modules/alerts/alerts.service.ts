@@ -4,6 +4,7 @@ import { OperationError } from "../operations/operations.schemas";
 import { PUBLIC_USER_SELECT } from "../../utils/public-user";
 import { isAlertRecipient, notifyAlert } from "./alert-notifications";
 import { notifyCommand } from "../members/notifications.service";
+import { lockRow } from "../../utils/database-schema";
 
 function normalizeNullable(value?: string | null) {
   if (value === undefined || value === null || value === "") return null;
@@ -216,7 +217,7 @@ export async function resolveAlert(alertId: string, actorUserId: string) {
 
 export async function cancelAlert(alertId: string, actorUserId: string, reason: string) {
   return serializable(async (tx) => {
-    await tx.$queryRaw`SELECT "id" FROM "Alert" WHERE "id" = ${alertId} FOR UPDATE`;
+    await lockRow(tx, "Alert", alertId);
     const alert = await tx.alert.findUnique({
       where: { id: alertId },
       include: { incident: { select: { id: true } } },
@@ -249,7 +250,7 @@ export async function cancelAlert(alertId: string, actorUserId: string, reason: 
 
 export async function respondToAlert(alertId: string, userId: string, response: "GOING" | "NOT_GOING") {
   return serializable(async (tx) => {
-    await tx.$queryRaw`SELECT "id" FROM "Alert" WHERE "id" = ${alertId} FOR UPDATE`;
+    await lockRow(tx, "Alert", alertId);
     const alert = await tx.alert.findUnique({ where: { id: alertId } });
     if (!alert) throw new OperationError(404, "Alerta no encontrada");
     if (alert.status !== "ACTIVE") throw new OperationError(409, "La alerta ya no acepta respuestas");

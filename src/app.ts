@@ -71,7 +71,7 @@ app.use("/api", observePresenceChanges);
 // Estado publico minimo: sirve para comprobar despues de publicar que la base tiene todas las migraciones.
 app.get("/api/health", (_req, res) => {
   const migrations = migrationStatus();
-  res.json({ status: migrations.pending.length ? "degraded" : "ok", database: migrations.pending.length ? `faltan ${migrations.pending.length} migraciones` : migrations.error ? "sin verificar" : "actualizada", pendingMigrations: migrations.pending, checkedAt: migrations.checkedAt });
+  res.json({ status: migrations.pending.length || migrations.error ? "degraded" : "ok", database: migrations.pending.length ? `faltan ${migrations.pending.length} migraciones` : migrations.error ? "sin verificar" : "actualizada", pendingMigrations: migrations.pending, checkedAt: migrations.checkedAt });
 });
 
 app.get("/", (req, res) => {

@@ -7,6 +7,7 @@ import { canWriteIncident, requireIncidentWrite } from "./incident-access";
 import { PUBLIC_USER_SELECT } from "../../utils/public-user";
 import { OperationError } from "../operations/operations.schemas";
 import { unionMilliseconds } from "../operations/reports.service";
+import { lockRow } from "../../utils/database-schema";
 
 const unique = (ids: string[]) => new Set(ids).size === ids.length;
 const form = z.object({
@@ -91,7 +92,7 @@ router.get("/",async(req,res)=>{
 router.put("/",async(req,res)=>{
   const {id}=z.object({id:z.string().min(1)}).parse(req.params),actor=req.user!,{revision,...data}=form.parse(req.body);
   res.json(await serializable(async tx=>{
-    await tx.$queryRaw`SELECT "id" FROM "Incident" WHERE "id" = ${id} FOR UPDATE`;
+    await lockRow(tx, "Incident", id);
     await requireIncidentWrite(tx,actor);
     const snapshot=await incidentSheetContext(tx,id,new Date());
     if(snapshot.incident.status!=="OPEN")throw new OperationError(409,"La intervención está cerrada");

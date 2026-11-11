@@ -10,6 +10,7 @@ import { PUBLIC_USER_SELECT } from "../../utils/public-user";
 import { OperationError } from "../operations/operations.schemas";
 import { requireQrPresence } from "../../utils/require-qr-presence";
 import { normalizeRank } from "../../utils/firefighter-ranks";
+import { lockRow } from "../../utils/database-schema";
 import { activePeople } from "../work/work.service";
 import { notify, notifyCommand } from "../members/notifications.service";
 const router = Router();
@@ -75,7 +76,7 @@ router.post("/", async(req,res)=>{
   res.status(201).json(await serializable(async tx=>{
     unauthorizedDriver=false;
     await requirePresentOrCommand(tx,req);
-    await tx.$queryRaw`SELECT "id" FROM "Incident" WHERE "id" = ${input.incidentId} FOR UPDATE`;
+    await lockRow(tx, "Incident", input.incidentId);
     const incident=await tx.incident.findUnique({where:{id:input.incidentId}});
     if(!incident||incident.status!=="OPEN")throw new OperationError(409,"La intervencion no esta abierta");
     // G15: al rehacer una intervencion anulada se cargan las salidas con sus horarios reales.

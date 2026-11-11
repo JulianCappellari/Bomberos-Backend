@@ -9,6 +9,7 @@ import { notify } from "../members/notifications.service";
 import { nextControlWeek } from "../members/groups.service";
 import { stationDate } from "../../utils/station-time";
 import { OperationError } from "../operations/operations.schemas";
+import { lockRow } from "../../utils/database-schema";
 
 function normalizeNullable(value?: string | null) {
   if (value === undefined || value === null || value === "") return null;
@@ -203,7 +204,7 @@ export async function createInspection(data: {
     });
 
     if(!data.draftId)throw new OperationError(400,"Inicie el borrador del control antes de finalizarlo");
-    await tx.$queryRaw`SELECT "id" FROM "ControlDraft" WHERE "id" = ${data.draftId} FOR UPDATE`;
+    await lockRow(tx, "ControlDraft", data.draftId);
     const draft=await tx.controlDraft.findUnique({where:{id:data.draftId}});
     if(!draft||draft.ownerId!==data.createdByUserId||draft.vehicleId!==data.vehicleId||draft.closedAt)throw new OperationError(409,"El borrador no corresponde o ya fue finalizado");
     const participants=draftParticipants(draft.participants);

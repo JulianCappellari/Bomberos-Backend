@@ -1,4 +1,5 @@
 import { prisma } from "../../config/prisma";
+import { lockRow } from "../../utils/database-schema";
 import { isCommandRank, effectiveAccessRole } from "../../utils/firefighter-ranks";
 import { OperationError } from "../operations/operations.schemas";
 import { serializable } from "../../utils/transaction";
@@ -124,7 +125,7 @@ export async function updateChatMessage(data: {
   body: string;
 }) {
   return serializable(async (prisma) => {
-  await prisma.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${data.messageId} FOR UPDATE`;
+  await lockRow(prisma, "ChatMessage", data.messageId);
   const message = await prisma.chatMessage.findFirst({
     where: {
       id: data.messageId,
@@ -187,7 +188,7 @@ export async function deleteChatMessage(data: {
   actorRole?: string;
 }) {
   return serializable(async (prisma) => {
-  await prisma.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${data.messageId} FOR UPDATE`;
+  await lockRow(prisma, "ChatMessage", data.messageId);
 
   const message = await prisma.chatMessage.findFirst({
     where: {
@@ -238,7 +239,7 @@ export async function setChatMessagePinned(data: {
 }) {
   await assertCommandRank(data.actorUserId,data.actorRole);
   return serializable(async (prisma) => {
-  await prisma.$queryRaw`SELECT "id" FROM "ChatMessage" WHERE "id" = ${data.messageId} FOR UPDATE`;
+  await lockRow(prisma, "ChatMessage", data.messageId);
 
   const message = await prisma.chatMessage.findFirst({
     where: {

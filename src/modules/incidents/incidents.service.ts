@@ -4,6 +4,7 @@ import { OperationError } from "../operations/operations.schemas";
 import { finalizeSheet } from "./incident-sheet";
 import { PUBLIC_USER_SELECT } from "../../utils/public-user";
 import { requireQrPresence } from "../../utils/require-qr-presence";
+import { lockRow } from "../../utils/database-schema";
 
 const ALERT_TYPE_LABELS = {
   FIRE: "Incendio",
@@ -475,14 +476,14 @@ export async function closeIncident(
   }
 
   return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT "id" FROM "Incident" WHERE "id" = ${incidentId} FOR UPDATE`;
+    await lockRow(tx, "Incident", incidentId);
     if (!["ADMIN", "OPERATOR", "GUARD"].includes(actorRole || "")) {
       await requireQrPresence(tx, actorUserId);
     }
     const closedAt = new Date();
     const current = await tx.incident.findUnique({where:{id:incidentId}});
     if(current?.status !== "OPEN") throw new OperationError(409,"La intervencion ya fue cerrada");
-    if(current.alertId) await tx.$queryRaw`SELECT "id" FROM "Alert" WHERE "id" = ${current.alertId} FOR UPDATE`;
+    if(current.alertId) await lockRow(tx, "Alert", current.alertId);
     if(await tx.missionMovement.findFirst({where:{incidentId,returnedAt:null}}))throw new OperationError(409,"Registre el retorno de todas las dotaciones antes de cerrar la intervencion");
     await finalizeSheet(tx,incidentId,closedAt,actorUserId);
 

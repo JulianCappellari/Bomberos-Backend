@@ -1,12 +1,13 @@
 import { serializable } from "../../utils/transaction";
 import { OperationError } from "../operations/operations.schemas";
 import { notifyCommand } from "../members/notifications.service";
+import { lockRow } from "../../utils/database-schema";
 
 // G15: la intervencion cerrada queda anulada (con su acta de salida y sus creditos) y se abre una
 // nueva que la reemplaza, donde se vuelven a cargar dotaciones, horarios y planilla.
 export async function voidAndRedoIncident(id: string, reason: string, actorUserId: string) {
   return serializable(async tx => {
-    await tx.$queryRaw`SELECT "id" FROM "Incident" WHERE "id" = ${id} FOR UPDATE`;
+    await lockRow(tx, "Incident", id);
     const incident = await tx.incident.findUnique({ where: { id }, include: { movements: { select: { departureId: true } }, replacement: { select: { id: true } } } });
     if (!incident) throw new OperationError(404, "Intervención no encontrada");
     if (incident.status !== "CLOSED") throw new OperationError(409, "Solo una intervención cerrada se anula y rehace; si está abierta, corríjala en su planilla");

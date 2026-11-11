@@ -11,6 +11,7 @@ import {normalizeRank} from "../../utils/firefighter-ranks";
 import {financeAccess as access} from "../../utils/finance-access";
 import {notifyCommand} from "../members/notifications.service";
 import { sanitizeTaskPhotos } from "../work/work-photos";
+import { lockRow } from "../../utils/database-schema";
 const router=Router();router.use(authenticate);
 router.get("/access",async(req,res)=>res.json(await access(req.user!.userId,req.user!.role)));
 router.get("/chiefs",async(req,res)=>{if(!(await access(req.user!.userId,req.user!.role)).canDelegate)throw new OperationError(403,"Acceso reservado al administrador general");res.json(await prisma.user.findMany({where:{isActive:true,deletedAt:null,profile:{rank:{equals:"Oficial",mode:"insensitive"}}},select:{id:true,username:true,financeChief:true,profile:{select:{fullName:true}}}}));});
@@ -29,7 +30,7 @@ router.get("/officer-expenses",authorize("OPERATOR"),async(req,res)=>{
 router.post("/expenses/:id/authorize",authorize("OPERATOR"),async(req,res)=>{
  const id=String(req.params.id),{revision,note}=z.object({revision:z.number().int().positive(),note:z.string().trim().min(10).max(1000)}).strict().parse(req.body),actor=req.user!.userId;
  res.json(await serializable(async tx=>{
-  await tx.$queryRaw`SELECT "id" FROM "ExpenseClaim" WHERE "id" = ${id} FOR UPDATE`;
+  await lockRow(tx, "ExpenseClaim", id);
   const row=await tx.expenseClaim.findUnique({where:{id},include:{approvals:true}}),reviewer=await tx.user.findUnique({where:{id:actor},include:{profile:true}});
   if(!row?.officerExpense||row.status==="REJECTED")throw new OperationError(409,"Gasto no disponible para autorización");
   if(row.userId===actor||normalizeRank(reviewer?.profile?.rank)!=="sub oficial")throw new OperationError(403,"No puede autorizar este gasto");

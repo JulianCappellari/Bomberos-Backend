@@ -4,6 +4,7 @@ import { OperationError } from "../operations/operations.schemas";
 import { inspectionTimestamp } from "./inspections.rules";
 import { notify } from "../members/notifications.service";
 import {requireInspectionPresence} from "./inspection-presence";
+import { lockRow } from "../../utils/database-schema";
 
 export const SIGN_WINDOW_MS = 24 * 3600000;
 export function hasMajority(signed: number, total: number) { return signed * 2 > total; }
@@ -11,7 +12,7 @@ export function hasMajority(signed: number, total: number) { return signed * 2 >
 export async function removeInspectionParticipant(id: string, userId: string, input: { revision: number; reason: string }, actor: { userId: string; role: string }) {
   if (!["ADMIN", "OPERATOR"].includes(actor.role)) throw new OperationError(403, "Solo jefatura retira participantes de un control");
   return serializable(async tx => {
-    await tx.$queryRaw`SELECT "id" FROM "Inspection" WHERE "id" = ${id} FOR UPDATE`;
+    await lockRow(tx, "Inspection", id);
     const row = await tx.inspection.findUnique({ where: { id }, include: { responsibles: true, vehicle: { include: { asset: true } } } });
     if (!row || row.voidedAt || row.revision !== input.revision) throw new OperationError(409, "El control cambió, fue anulado o no existe");
     const target = row.responsibles.find(member => member.userId === userId);
@@ -33,7 +34,7 @@ export async function removeInspectionParticipant(id: string, userId: string, in
 }
 export async function confirmInspection(id: string, userId: string) {
   return serializable(async tx => {
-    await tx.$queryRaw`SELECT "id" FROM "Inspection" WHERE "id" = ${id} FOR UPDATE`;
+    await lockRow(tx, "Inspection", id);
     const row = await tx.inspection.findUnique({ where: { id }, include: { responsibles: true, vehicle: { include: { asset: true } } } });
     if (!row || row.voidedAt) throw new OperationError(404, "Control no disponible");
     const own = row.responsibles.find(member => member.userId === userId);
