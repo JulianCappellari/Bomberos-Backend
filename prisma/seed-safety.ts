@@ -9,6 +9,19 @@ function ownershipFilter(modelName: string, ancestors: string[] = []): Filter {
     const allowed: Record<string, unknown>[] = model.fields.some((field) => field.name === "id") ? [prefix("id")] : [];
     if (model.name === "RankingPolicy") allowed.push({ id: "main" });
     if (model.name === "RankingTemplate") allowed.push({ id: { in: ["ranking-salon", "ranking-oficina", "ranking-cartelera"] } });
+    if (model.name === "PromotionRule") allowed.push(
+      {
+        updatedByUserId: null,
+        OR: [
+          { rank: "Aspirante menor", nextRank: "Aspirante mayor", minYearsInRank: 1, minYearsService: 1, minApprovedCourses: 0 },
+          { rank: "Aspirante mayor", nextRank: "Bombero", minYearsInRank: 1, minYearsService: 2, minApprovedCourses: 1 },
+          { rank: "Aspirante", nextRank: "Bombero", minYearsInRank: 1, minYearsService: 1, minApprovedCourses: 1 },
+          { rank: "Bombero", nextRank: "Sub oficial", minYearsInRank: 5, minYearsService: 5, minApprovedCourses: 3 },
+          { rank: "Sub oficial", nextRank: "Oficial", minYearsInRank: 4, minYearsService: 10, minApprovedCourses: 5 },
+        ],
+      },
+      { updatedByUserId: { startsWith: "demo_v2_" } },
+    );
     if (model.name === "AuditLog") allowed.push({ action: "SYSTEM_DEMO_BUSINESS_REPAIRED", entityType: "System", entityId: "demo_v2", actorUserId: null });
     if (model.name === "AuditLog") allowed.push(
       { action: "HTTP_ACCESS_DENIED", entityType: "HttpRequest", actorUserId: null },
