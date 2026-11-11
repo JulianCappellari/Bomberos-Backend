@@ -1375,6 +1375,8 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
         extended, questionnaire,
       };
     },
-    { isolationLevel: "Serializable", timeout: 60000 }
+    // Neon adds network latency to every statement. Keep the seed atomic, but
+    // allow enough time for the complete synthetic dataset to reach a remote DB.
+    { isolationLevel: "Serializable", maxWait: 30000, timeout: 600000 }
   );
 }
