@@ -1335,6 +1335,7 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
     },
     transactionOptions,
   );
+  console.log("Seed 1/6: dotacion, flota y registros base completados.");
 
   // Each scenario family is independently atomic. This avoids holding one
   // remote Neon transaction open across thousands of sequential statements.
@@ -1342,22 +1343,27 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
     (tx) => seedExtendedScenarios(tx, passwordHash, reference),
     transactionOptions,
   );
+  console.log("Seed 2/6: escenarios operativos extendidos completados.");
   await client.$transaction(
     (tx) => seedCurrentRules(tx, passwordHash, reference),
     transactionOptions,
   );
+  console.log("Seed 3/6: reglas de negocio actuales completadas.");
   const questionnaire = await client.$transaction(
     (tx) => seedQuestionnaireScenarios(tx),
     transactionOptions,
   );
+  console.log("Seed 4/6: escenarios de permisos y coherencia completados.");
   await client.$transaction(
     (tx) => seedProfessionalScenarios(tx, reference),
     transactionOptions,
   );
+  console.log("Seed 5/6: escenarios profesionales completados.");
   await client.$transaction(
     (tx) => seedCompleteIncidentSheets(tx, reference),
     transactionOptions,
   );
+  console.log("Seed 6/6: planillas de intervencion completadas.");
   if (options.resetPasswords) {
     await client.$transaction(
       (tx) => resetDemoCredentials(tx, password),
