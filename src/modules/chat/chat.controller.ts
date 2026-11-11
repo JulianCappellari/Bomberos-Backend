@@ -57,6 +57,7 @@ export async function createChatMessageController(req: Request, res: Response) {
       body: parsed.body,
       authorUserId: actorUserId,
       audience: parsed.audience,
+      poll: parsed.poll,
     });
 
     return res.status(201).json(message);

@@ -112,6 +112,33 @@ async function main() {
     const general = await call("/chat/messages", 201, bomberoA, "POST", { body: "Aviso general" });
     assert.equal(general.audience, "ALL");
 
+    // --- Encuestas en comunicaciones ---
+    await call("/chat/messages", 400, bomberoA, "POST", { body: "¿Una sola?", poll: { options: ["Sí"] } });
+    await call("/chat/messages", 400, bomberoA, "POST", { body: "¿Repetidas?", poll: { options: ["Sí", "sí"] } });
+    const single = await call("/chat/messages", 201, bomberoA, "POST", { body: "¿Qué día hacemos la práctica?", poll: { options: ["Martes", "Jueves", "Sábado"] } });
+    assert.equal(single.poll.allowMultiple, false); assert.deepEqual(single.poll.options.map((o: { text: string }) => o.text), ["Martes", "Jueves", "Sábado"]);
+    const [martes, jueves, sabado] = single.poll.options.map((o: { id: string }) => o.id);
+    await call(`/chat/messages/${single.id}`, 409, bomberoA, "PATCH", { body: "Cambio la pregunta" });
+    await call(`/chat/polls/${single.poll.id}/vote`, 400, bomberoB, "POST", { optionIds: [martes, jueves] });
+    await call(`/chat/polls/${single.poll.id}/vote`, 400, bomberoB, "POST", { optionIds: ["no-existe"] });
+    await call(`/chat/polls/${single.poll.id}/vote`, 403, admin, "POST", { optionIds: [martes] });
+    await call(`/chat/polls/${single.poll.id}/vote`, 200, bomberoB, "POST", { optionIds: [martes] });
+    let voted = await call(`/chat/polls/${single.poll.id}/vote`, 200, bomberoB, "POST", { optionIds: [jueves] }); // cambiar el voto
+    assert.equal(voted.poll.options[0].votes.length, 0); assert.equal(voted.poll.options[1].votes[0].userId, bUser!.id);
+    await call(`/chat/polls/${single.poll.id}/vote`, 200, bomberoC, "POST", { optionIds: [sabado] });
+    voted = await call(`/chat/polls/${single.poll.id}/vote`, 200, bomberoC, "POST", { optionIds: [] }); // retirar el voto
+    assert.equal(voted.poll.options[2].votes.length, 0);
+    await call(`/chat/polls/${single.poll.id}/close`, 403, bomberoB, "POST");
+    const closedPoll = await call(`/chat/polls/${single.poll.id}/close`, 200, bomberoA, "POST");
+    assert(closedPoll.poll.closedAt);
+    await call(`/chat/polls/${single.poll.id}/vote`, 409, bomberoB, "POST", { optionIds: [martes] });
+    const multi = await call("/chat/messages", 201, officer, "POST", { body: "¿Qué temas repasamos?", audience: "COMMAND", poll: { options: ["Rescate", "Materiales peligrosos", "RCP"], allowMultiple: true } });
+    await call(`/chat/polls/${multi.poll.id}/vote`, 403, bomberoA, "POST", { optionIds: [multi.poll.options[0].id] }); // no es de su grupo
+    voted = await call(`/chat/polls/${multi.poll.id}/vote`, 200, sub, "POST", { optionIds: [multi.poll.options[0].id, multi.poll.options[2].id] });
+    assert.equal(voted.poll.options.filter((o: { votes: unknown[] }) => o.votes.length === 1).length, 2);
+    await call(`/chat/polls/${multi.poll.id}/close`, 200, admin, "POST"); // jefatura puede cerrar encuestas ajenas
+    for (const action of ["CHAT_POLL_VOTED", "CHAT_POLL_VOTE_REMOVED", "CHAT_POLL_CLOSED"]) assert(await prisma.auditLog.findFirst({ where: { action } }), action);
+
     // --- 18: cumplimiento de guardias ---
     const previous = new Date(stationDate() + "T12:00:00Z"); previous.setUTCDate(1); previous.setUTCMonth(previous.getUTCMonth() - 1);
     const month = previous.toISOString().slice(0, 7), day = month + "-03";

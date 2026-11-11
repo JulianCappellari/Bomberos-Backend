@@ -5,7 +5,13 @@ import { OperationError } from "../operations/operations.schemas";
 import { serializable } from "../../utils/transaction";
 import { assertCanSendTo, audienceMemberIds, visibleAudiences, type ChatAudience } from "./chat-audience";
 
+const VOTER_SELECT = { id: true, username: true, profile: { select: { fullName: true } } } as const;
 const MESSAGE_INCLUDE = {
+  poll: {
+    include: {
+      options: { orderBy: { position: "asc" as const }, include: { votes: { orderBy: { votedAt: "asc" as const }, select: { userId: true, votedAt: true, user: { select: VOTER_SELECT } } } } },
+    },
+  },
   author: {
     select: {
       id: true,
@@ -83,6 +89,7 @@ export async function createChatMessage(data: {
   body: string;
   authorUserId: string;
   audience?: ChatAudience;
+  poll?: { options: string[]; allowMultiple: boolean };
 }) {
   return serializable(async (prisma) => {
   const audience = data.audience ?? "ALL";
@@ -92,6 +99,7 @@ export async function createChatMessage(data: {
       body: data.body,
       authorUserId: data.authorUserId,
       audience,
+      ...(data.poll ? { poll: { create: { allowMultiple: data.poll.allowMultiple, options: { create: data.poll.options.map((text, position) => ({ text, position })) } } } } : {}),
     },
     include: MESSAGE_INCLUDE,
   });
@@ -105,13 +113,14 @@ export async function createChatMessage(data: {
       metadata: {
         bodyLength: data.body.length,
         audience,
+        ...(data.poll ? { poll: { options: data.poll.options, allowMultiple: data.poll.allowMultiple } } : {}),
       },
     },
   });
   // Un mensaje a un grupo se avisa a sus integrantes; los generales se ven en Comunicaciones.
   if (audience !== "ALL") {
     const members = (await audienceMemberIds(prisma, audience)).filter((id) => id !== data.authorUserId);
-    if (members.length) await prisma.memberNotification.createMany({ data: members.map((userId) => ({ userId, title: "Nuevo mensaje para tu grupo", href: "/chat", body: data.body.slice(0, 300) })) });
+    if (members.length) await prisma.memberNotification.createMany({ data: members.map((userId) => ({ userId, title: data.poll ? "Nueva encuesta para tu grupo" : "Nuevo mensaje para tu grupo", href: "/chat", body: data.body.slice(0, 300) })) });
   }
 
   return message;
@@ -147,6 +156,8 @@ export async function updateChatMessage(data: {
 
   // N02: nadie edita mensajes ajenos; solo su autor.
   if (message.authorUserId !== data.actorUserId) throw new OperationError(403, "Solo el autor puede editar su mensaje");
+  // Como en WhatsApp, una encuesta no se edita (cambiaria el sentido de los votos ya emitidos).
+  if (await prisma.chatPoll.findUnique({ where: { messageId: message.id }, select: { id: true } })) throw new OperationError(409, "Las encuestas no se editan. Cerrala y creá una nueva si hace falta");
 
   const updated = await prisma.chatMessage.update({
     where: { id: data.messageId },
@@ -276,5 +287,50 @@ export async function setChatMessagePinned(data: {
   });
 
   return updated;
+  });
+}
+
+
+// ---- Encuestas ----
+async function loadPollForActor(tx: Parameters<Parameters<typeof serializable>[0]>[0], pollId: string, actorUserId: string) {
+  await lockRow(tx, "ChatPoll", pollId);
+  const poll = await tx.chatPoll.findUnique({ where: { id: pollId }, include: { options: { select: { id: true, text: true } }, message: { select: { id: true, authorUserId: true, audience: true, deletedAt: true } } } });
+  if (!poll || poll.message.deletedAt) throw new OperationError(404, "Encuesta no encontrada");
+  const audiences = await visibleAudiences(tx, actorUserId);
+  if (poll.message.authorUserId !== actorUserId && !audiences.includes(poll.message.audience as ChatAudience)) throw new OperationError(403, "Esta encuesta es para otro grupo");
+  return poll;
+}
+
+/** Reemplaza el voto de la persona (vacio = retirar el voto). Valido mientras la encuesta este abierta. */
+export async function votePoll(actor: { userId: string }, pollId: string, optionIds: string[]) {
+  return serializable(async (tx) => {
+    const poll = await loadPollForActor(tx, pollId, actor.userId);
+    if (poll.closedAt) throw new OperationError(409, "La encuesta está cerrada");
+    const user = await tx.user.findUnique({ where: { id: actor.userId }, select: { profile: { select: { rank: true } } } });
+    if ((user?.profile?.rank ?? "").toLowerCase() === "administrador") throw new OperationError(403, "El administrador del sistema no vota en encuestas");
+    const unique = [...new Set(optionIds)];
+    const valid = new Set(poll.options.map((o) => o.id));
+    if (unique.some((id) => !valid.has(id))) throw new OperationError(400, "Opción inválida para esta encuesta");
+    if (!poll.allowMultiple && unique.length > 1) throw new OperationError(400, "Esta encuesta admite una sola respuesta");
+    const before = (await tx.chatPollVote.findMany({ where: { pollId, userId: actor.userId }, select: { optionId: true } })).map((v) => v.optionId);
+    await tx.chatPollVote.deleteMany({ where: { pollId, userId: actor.userId } });
+    if (unique.length) await tx.chatPollVote.createMany({ data: unique.map((optionId) => ({ pollId, optionId, userId: actor.userId })) });
+    const text = (ids: string[]) => ids.map((id) => poll.options.find((o) => o.id === id)?.text ?? id);
+    await tx.auditLog.create({ data: { actorUserId: actor.userId, action: unique.length ? "CHAT_POLL_VOTED" : "CHAT_POLL_VOTE_REMOVED", entityType: "ChatMessage", entityId: poll.message.id, metadata: { pollId, before: text(before), after: text(unique) } } });
+    return tx.chatMessage.findUniqueOrThrow({ where: { id: poll.message.id }, include: MESSAGE_INCLUDE });
+  });
+}
+
+/** Cierra la encuesta: la puede cerrar su autor o jefatura. Los votos quedan como estan. */
+export async function closePoll(actor: { userId: string; role: string }, pollId: string) {
+  return serializable(async (tx) => {
+    const poll = await loadPollForActor(tx, pollId, actor.userId);
+    if (poll.message.authorUserId !== actor.userId && !["ADMIN", "OPERATOR"].includes(actor.role)) throw new OperationError(403, "Solo quien creó la encuesta o jefatura puede cerrarla");
+    if (!poll.closedAt) {
+      await tx.chatPoll.update({ where: { id: pollId }, data: { closedAt: new Date(), closedByUserId: actor.userId } });
+      const votes = await tx.chatPollVote.groupBy({ by: ["optionId"], where: { pollId }, _count: { _all: true } });
+      await tx.auditLog.create({ data: { actorUserId: actor.userId, action: "CHAT_POLL_CLOSED", entityType: "ChatMessage", entityId: poll.message.id, metadata: { pollId, results: poll.options.map((o) => ({ option: o.text, votes: votes.find((v) => v.optionId === o.id)?._count._all ?? 0 })) } } });
+    }
+    return tx.chatMessage.findUniqueOrThrow({ where: { id: poll.message.id }, include: MESSAGE_INCLUDE });
   });
 }

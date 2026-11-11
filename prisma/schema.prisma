@@ -223,6 +223,8 @@ model User {
   chatMessages ChatMessage[] @relation("ChatMessageAuthor")
   stationEventsCreated StationEvent[] @relation("StationEventCreator")
   incidentAgenciesCreated IncidentAgency[] @relation("IncidentAgencyCreator")
+  chatPollVotes ChatPollVote[]
+  chatPollsClosed ChatPoll[] @relation("ChatPollCloser")
   stationEventRsvps StationEventRsvp[]
   documentReads DocumentRead[]
 
@@ -575,6 +577,7 @@ model ChatMessage {
 
   author User @relation("ChatMessageAuthor", fields: [authorUserId], references: [id], onDelete: Cascade)
   acknowledgements ChatAcknowledgement[]
+  poll ChatPoll?
 
   @@index([createdAt])
   @@index([authorUserId])
@@ -1791,4 +1794,40 @@ model IncidentAgency {
   createdBy User @relation("IncidentAgencyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
   @@index([incidentId])
   @@index([agencyType])
+}
+
+// Encuestas en Comunicaciones (como en WhatsApp): una o varias opciones, voto modificable mientras esta abierta.
+model ChatPoll {
+  id String @id @default(cuid())
+  messageId String @unique
+  allowMultiple Boolean @default(false)
+  closedAt DateTime?
+  closedByUserId String?
+  createdAt DateTime @default(now())
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  closedBy User? @relation("ChatPollCloser", fields: [closedByUserId], references: [id], onDelete: SetNull)
+  options ChatPollOption[]
+  votes ChatPollVote[]
+}
+
+model ChatPollOption {
+  id String @id @default(cuid())
+  pollId String
+  text String @db.VarChar(120)
+  position Int
+  poll ChatPoll @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes ChatPollVote[]
+  @@unique([pollId, position])
+}
+
+model ChatPollVote {
+  pollId String
+  optionId String
+  userId String
+  votedAt DateTime @default(now())
+  poll ChatPoll @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  option ChatPollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([optionId, userId])
+  @@index([pollId, userId])
 }
