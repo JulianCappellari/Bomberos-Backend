@@ -1,3 +1,4 @@
+import { normalizeRank } from "../../utils/firefighter-ranks";
 import bcrypt from "bcrypt";
 import { Prisma } from "@prisma/client";
 import { effectiveAccessRole } from "../../utils/firefighter-ranks";
@@ -78,11 +79,13 @@ export async function getAllUsers() {
 }
 
 export async function getActiveUserRoster() {
-  return prisma.user.findMany({
+  // Listado operativo (dotaciones, asignaciones): sin la Comision Directiva (civil) ni las cuentas de guardia vinculadas.
+  const rows = await prisma.user.findMany({
     where: {
       deletedAt: null,
       isActive: true,
       isPendingApproval: false,
+      guardForUserId: null,
     },
     select: {
       id: true,
@@ -101,6 +104,7 @@ export async function getActiveUserRoster() {
       username: "asc",
     },
   });
+  return rows.filter((row) => normalizeRank(row.profile?.rank) !== "comision directiva");
 }
 
 export async function getUserById(userId: string) {

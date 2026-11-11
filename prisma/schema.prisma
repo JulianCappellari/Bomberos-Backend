@@ -172,6 +172,10 @@ model User {
   failedLoginCount Int @default(0)
   lockedUntil DateTime?
   guardEligible Boolean @default(false)
+  // Cuenta de guardia propia (otro usuario y contraseña) vinculada a la persona titular.
+  guardForUserId String? @unique
+  guardFor User? @relation("GuardAccount", fields: [guardForUserId], references: [id], onDelete: SetNull)
+  guardAccount User? @relation("GuardAccount")
   incidentSheets IncidentSheet[]
   driverPermissions VehicleDriverAuthorization[] @relation("DriverPerson")
   grantedDriverPermissions VehicleDriverAuthorization[] @relation("DriverGrantor")
@@ -466,6 +470,9 @@ model Incident {
   replaces Incident? @relation("IncidentReplacement", fields: [replacesIncidentId], references: [id], onDelete: Restrict)
   replacement Incident? @relation("IncidentReplacement")
   sheet IncidentSheet?
+  // Pedido de auxilio N° (correlativo por año, como el libro en papel). Lo asigna la base al crear.
+  requestYear Int?
+  requestNumber Int?
   movements MissionMovement[]
   agencies IncidentAgency[]
   id              String         @id @default(cuid())
@@ -504,6 +511,12 @@ model IncidentSheet {
   authorId String
   callerName String @default("") @db.VarChar(120)
   callerPhone String @default("") @db.VarChar(40)
+  // Campos de la constancia en papel.
+  addressNumber String @default("") @db.VarChar(40)
+  receivedBy String @default("") @db.VarChar(120)
+  firefightersOnScene String @default("") @db.VarChar(1000)
+  classifications String[] @default([])
+  classificationDetail String @default("") @db.VarChar(300)
   notes String @db.VarChar(4000)
   baseUserIds String[]
   materials Json
@@ -578,6 +591,9 @@ model ChatMessage {
   author User @relation("ChatMessageAuthor", fields: [authorUserId], references: [id], onDelete: Cascade)
   acknowledgements ChatAcknowledgement[]
   poll ChatPoll?
+  // Links (http/https) y fotos adjuntas al mensaje.
+  links String[] @default([])
+  attachments ChatAttachment[]
 
   @@index([createdAt])
   @@index([authorUserId])
@@ -1574,6 +1590,8 @@ model Station {
   latitude     Float
   longitude    Float
   radiusMeters Int      @default(60)
+  // false: base habilitada para fichar con QR sin pedir ubicacion (uso provisorio).
+  requiresLocation Boolean @default(true)
   allowedIp    String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -1830,4 +1848,83 @@ model ChatPollVote {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@id([optionId, userId])
   @@index([pollId, userId])
+}
+
+model ChatAttachment {
+  id        String   @id @default(cuid())
+  messageId String
+  bytes     Bytes
+  sha256    String   @db.VarChar(64)
+  createdAt DateTime @default(now())
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+}
+
+// Deposito del cuartel: vestimenta, EPP y materiales con stock por cantidad.
+model SupplyItem {
+  id          String    @id @default(cuid())
+  name        String    @db.VarChar(140)
+  category    String    @db.VarChar(30)
+  size        String?   @db.VarChar(30)
+  unit        String    @default("unidad") @db.VarChar(20)
+  quantity    Int       @default(0)
+  minQuantity Int       @default(0)
+  location    String?   @db.VarChar(120)
+  notes       String?   @db.VarChar(1000)
+  revision    Int       @default(1)
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  movements SupplyMovement[]
+  requests  MaterialRequest[]
+
+  @@index([archivedAt, category])
+}
+
+// Alta (IN), baja (OUT), entrega a una persona o movil (ASSIGN), faltante o perdida (LOSS) y recuento (ADJUST).
+model SupplyMovement {
+  id              String   @id @default(cuid())
+  itemId          String
+  type            String   @db.VarChar(10)
+  quantity        Int
+  balanceAfter    Int
+  reason          String   @db.VarChar(500)
+  assignedUserId  String?
+  vehicleId       String?
+  requestId       String?
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  item SupplyItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([itemId, createdAt])
+  @@index([createdAt])
+}
+
+// Pedido de materiales para un movil o el cuartel (por ej. "foco para el camion 8").
+model MaterialRequest {
+  id                String    @id @default(cuid())
+  title             String    @db.VarChar(160)
+  details           String?   @db.VarChar(2000)
+  destination       String    @db.VarChar(10)
+  vehicleId         String?
+  quantity          Int       @default(1)
+  priority          String    @default("NORMAL") @db.VarChar(10)
+  status            String    @default("PENDING") @db.VarChar(12)
+  requestedByUserId String
+  handledByUserId   String?
+  handledAt         DateTime?
+  handlerNotes      String?   @db.VarChar(2000)
+  supplyItemId      String?
+  revision          Int       @default(1)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  supplyItem SupplyItem? @relation(fields: [supplyItemId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt])
+  @@index([requestedByUserId, createdAt])
 }

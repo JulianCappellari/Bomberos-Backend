@@ -5,7 +5,7 @@ import { normalizeRank } from "./firefighter-ranks";
 export const SPECIAL_PERMISSIONS = ["FLEET", "PPE", "TECHNICAL", "FINANCE"] as const;
 export type SpecialPermission = (typeof SPECIAL_PERMISSIONS)[number];
 export const SPECIAL_PERMISSION_LABELS: Record<SpecialPermission, string> = {
-  FLEET: "Responsable de flota", PPE: "Responsable de EPP", TECHNICAL: "Responsable técnico (ERA y certificaciones)", FINANCE: "Permiso financiero",
+  FLEET: "Responsable de flota", PPE: "Encargado de vestimenta y materiales (EPP, stock y pedidos)", TECHNICAL: "Responsable técnico (ERA y certificaciones)", FINANCE: "Permiso financiero",
 };
 // Cargos que pueden recibir cada permiso. FINANCE: oficiales y comision directiva designada (O01).
 const ELIGIBLE: Record<SpecialPermission, string[]> = {

@@ -1,3 +1,4 @@
+import { closeOwnerAttendanceForGuard } from "../users/guard-account.service";
 import bcrypt from "bcrypt";
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -77,6 +78,8 @@ export async function loginUser(username: string, password: string, userAgent?: 
         expiresAt: new Date(verifyRefreshToken(refreshToken).exp * 1000), userAgent: userAgent?.slice(0, 200) || null,
       },
     });
+    // Cuenta de guardia: al tomar la guardia termina la permanencia personal de su titular.
+    await closeOwnerAttendanceForGuard(tx, current);
     await tx.auditLog.create({
       data: { actorUserId: current.id, action: "AUTH_LOGIN", entityType: "AuthSession", entityId: sessionId, metadata: { device: deviceLabel(userAgent) } },
     });

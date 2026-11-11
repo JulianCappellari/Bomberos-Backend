@@ -12,6 +12,7 @@ import {financeAccess as access} from "../../utils/finance-access";
 import {notifyCommand} from "../members/notifications.service";
 import { sanitizeTaskPhotos } from "../work/work-photos";
 import { lockRow } from "../../utils/database-schema";
+import { commissionAccess } from "../commission/commission.service";
 const router=Router();router.use(authenticate);
 router.get("/access",async(req,res)=>res.json(await access(req.user!.userId,req.user!.role)));
 router.get("/chiefs",async(req,res)=>{if(!(await access(req.user!.userId,req.user!.role)).canDelegate)throw new OperationError(403,"Acceso reservado al administrador general");res.json(await prisma.user.findMany({where:{isActive:true,deletedAt:null,profile:{rank:{equals:"Oficial",mode:"insensitive"}}},select:{id:true,username:true,financeChief:true,profile:{select:{fullName:true}}}}));});
@@ -46,7 +47,8 @@ router.post("/expenses/:id/authorize",authorize("OPERATOR"),async(req,res)=>{
 router.get("/expenses/:id/receipt",async(req,res)=>{
  const row=await prisma.expenseClaim.findUnique({where:{id:String(req.params.id)},select:{receiptBytes:true,receiptSha256:true,userId:true,officerExpense:true}});
  if(!row)throw new OperationError(404,"Comprobante no encontrado");
- if(row.userId!==req.user!.userId&&!(await access(req.user!.userId,req.user!.role)).canManage&&!(req.user!.role==="OPERATOR"&&row.officerExpense))throw new OperationError(403,"No puede consultar este comprobante");
+ // Transparencia: la Comision Directiva tambien puede ver los comprobantes.
+ if(row.userId!==req.user!.userId&&!(await access(req.user!.userId,req.user!.role)).canManage&&!(req.user!.role==="OPERATOR"&&row.officerExpense)&&!(await commissionAccess(req.user!)))throw new OperationError(403,"No puede consultar este comprobante");
  if(!row.receiptBytes)throw new OperationError(404,"Este gasto historico no tiene una imagen adjunta");
  res.set({"Content-Type":"image/jpeg","Cache-Control":"private, no-store","X-Content-Type-Options":"nosniff","Content-Disposition":"inline; filename=comprobante.jpg"}).send(Buffer.from(row.receiptBytes));
 });

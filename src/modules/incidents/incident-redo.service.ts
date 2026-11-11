@@ -17,7 +17,7 @@ export async function voidAndRedoIncident(id: string, reason: string, actorUserI
     if (departureIds.length) await tx.vehicleDeparture.updateMany({ where: { id: { in: departureIds }, voidedAt: null }, data: { voidedAt: now, voidReason: `Intervención anulada para rehacer: ${reason}`.slice(0, 2000), revision: { increment: 1 } } });
     await tx.serviceParticipation.updateMany({ where: { incidentId: id, cancelledAt: null }, data: { cancelledAt: now, cancelReason: `Intervención anulada para rehacer: ${reason}`.slice(0, 2000), revision: { increment: 1 } } });
     await tx.incident.update({ where: { id }, data: { voidedAt: now, voidReason: reason } });
-    const redo = await tx.incident.create({ data: { title: incident.title, type: incident.type, description: incident.description, location: incident.location, occurredAt: incident.occurredAt, createdByUserId: actorUserId, replacesIncidentId: id } });
+    const redo = await tx.incident.create({ data: { title: incident.title, type: incident.type, description: incident.description, location: incident.location, occurredAt: incident.occurredAt, createdByUserId: actorUserId, replacesIncidentId: id, requestYear: incident.requestYear, requestNumber: incident.requestNumber } });
     await tx.auditLog.create({ data: { actorUserId, action: "INCIDENT_VOIDED_FOR_REDO", entityType: "Incident", entityId: id, metadata: { reason, replacementIncidentId: redo.id, voidedDepartures: departureIds } } });
     await notifyCommand(tx, `Intervención anulada para rehacer: ${incident.title}`, `/incidents/${redo.id}/sheet`, reason, actorUserId);
     return { voidedIncidentId: id, incidentId: redo.id, message: "Intervención anulada. Se abrió una nueva para cargar todo nuevamente con los horarios reales" };

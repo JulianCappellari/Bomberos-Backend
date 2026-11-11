@@ -1,3 +1,4 @@
+import { ownerOnGuardDuty } from "../users/guard-account.service";
 import { gpsSuspicionReasons, recordGpsSuspicion, recordSharedDevice } from "../../utils/gps-suspicion";
 import { prisma } from "../../config/prisma";
 import { creditedServices } from "../incidents/credited-services";
@@ -65,8 +66,8 @@ export async function scanAttendanceQr(data: {
   actorRole?: string;
   userId: string;
   qrToken: string;
-  latitude: number;
-  longitude: number;
+  latitude?: number;
+  longitude?: number;
   accuracy?: number;
   deviceFingerprint: string;
   ip?: string;
@@ -94,26 +95,21 @@ export async function scanAttendanceQr(data: {
 
   const station = challenge.station;
 
-  const distance = getDistanceMeters(
-    data.latitude,
-    data.longitude,
-    station.latitude,
-    station.longitude,
-  );
-
-  if (
-    typeof data.accuracy === "number" &&
-    data.accuracy > MAX_ALLOWED_ACCURACY_METERS
-  ) {
-    throw new Error("La precisión de ubicación es insuficiente");
-  }
-
-  if (distance > Math.max(station.radiusMeters, MAX_ALLOWED_DISTANCE_METERS)) {
-    throw new Error("Estás fuera del rango permitido del cuartel");
+  // Base sin ubicacion: se ficha solo con el QR. En las demas la ubicacion es obligatoria.
+  let distance = 0;
+  if (station.requiresLocation) {
+    if (typeof data.latitude !== "number" || typeof data.longitude !== "number") throw new OperationError(428, "Este cuartel pide tu ubicación para registrar la asistencia");
+    distance = getDistanceMeters(data.latitude, data.longitude, station.latitude, station.longitude);
+    if (typeof data.accuracy === "number" && data.accuracy > MAX_ALLOWED_ACCURACY_METERS) throw new Error("La precisión de ubicación es insuficiente");
+    if (distance > Math.max(station.radiusMeters, MAX_ALLOWED_DISTANCE_METERS)) throw new Error("Estás fuera del rango permitido del cuartel");
   }
 
   const actor = await prisma.user.findUnique({ where: { id: data.userId }, include: { profile: true } });
   if (!actor || normalizeRank(actor.profile?.rank) === "administrador") throw new OperationError(403, "La cuenta administradora no registra asistencia personal");
+  if (normalizeRank(actor.profile?.rank) === "comision directiva") throw new OperationError(403, "La Comisión Directiva no registra asistencia: es una cuenta de consulta, no de bombero");
+  // Anti-fraude: quien muestra el QR como guardia no puede usarlo para su propia cuenta personal.
+  const creator = challenge.createdByUserId ? await prisma.user.findUnique({ where: { id: challenge.createdByUserId }, select: { guardForUserId: true } }) : null;
+  if (challenge.createdByUserId === data.userId || creator?.guardForUserId === data.userId) throw new OperationError(403, "No podés registrar tu asistencia con el QR que generaste vos. Otra persona de guardia o jefatura debe mostrarte el QR");
   const openAttendance = await prisma.attendance.findFirst({
     where: {
       userId: data.userId,
@@ -132,6 +128,9 @@ export async function scanAttendanceQr(data: {
 
   if (!openAttendance) {
     if (data.actorRole === "GUARD" || effectiveAccessRole(actor.role, actor.profile?.rank) === "GUARD") throw new OperationError(403, "Guardia puede cerrar permanencias, pero no registrar ingresos");
+    // Tampoco desde otro celular: mientras tenga la funcion de guardia abierta en algun dispositivo,
+    // su cuenta personal no suma asistencia. Primero tiene que terminar la guardia.
+    if (await ownerOnGuardDuty(prisma, data.userId)) throw new OperationError(403, "Tu cuenta de guardia está en uso. Cerrá sesión en la cuenta de guardia antes de registrar tu asistencia personal");
     action = "CHECK_IN";
 
     attendance = await prisma.attendance.create({
@@ -152,7 +151,7 @@ export async function scanAttendanceQr(data: {
     });
     // T09: una ubicacion con senales de falsificacion se marca y audita, sin bloquear el ingreso.
     const lastFix = await prisma.attendance.findFirst({ where: { userId: data.userId, id: { not: attendance.id } }, orderBy: { createdAt: "desc" }, select: { checkInLatitude: true, checkInLongitude: true } });
-    await recordGpsSuspicion(prisma, data.userId, attendance.id, "Ingreso por QR", gpsSuspicionReasons(data, lastFix ? { latitude: lastFix.checkInLatitude, longitude: lastFix.checkInLongitude } : null));
+    if (station.requiresLocation && typeof data.latitude === "number" && typeof data.longitude === "number") await recordGpsSuspicion(prisma, data.userId, attendance.id, "Ingreso por QR", gpsSuspicionReasons({ ...data, latitude: data.latitude, longitude: data.longitude }, lastFix ? { latitude: lastFix.checkInLatitude, longitude: lastFix.checkInLongitude } : null));
     // Anti-fraude: el mismo celular ya ficho a otra persona en las ultimas 12 horas (posible fichaje por otro).
     await recordSharedDevice(prisma, data.userId, attendance.id, data.deviceFingerprint);
 

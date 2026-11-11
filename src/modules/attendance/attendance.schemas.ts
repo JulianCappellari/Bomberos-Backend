@@ -6,8 +6,9 @@ export const createQrChallengeSchema = z.object({
 
 export const scanAttendanceQrSchema = z.object({
   qrToken: z.string().min(1, "QR token requerido"),
-  latitude: z.number(),
-  longitude: z.number(),
+  // Opcionales: la base sin ubicacion no las pide; las demas responden 428 si faltan.
+  latitude: z.number().finite().min(-90).max(90).optional(),
+  longitude: z.number().finite().min(-180).max(180).optional(),
   accuracy: z.number().optional(),
   deviceFingerprint: z.string().min(1, "Device fingerprint requerido"),
 });

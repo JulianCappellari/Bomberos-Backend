@@ -1,6 +1,7 @@
 import { requireStepUp } from "../../middlewares/step-up.middleware";
 import { Router } from "express";
 import {setGuardEligibility} from "./guard-eligibility.service";
+import { createGuardAccount, createGuardAccountSchema, getGuardAccount } from "./guard-account.service";
 import {
   createUserController,
   getActiveUserRosterController,
@@ -23,6 +24,11 @@ router.use(authenticate);
 router.put("/:id/guard-eligibility",authorize("ADMIN"),requireStepUp,async(req,res)=>{
   const {enabled,revision,reason}=z.object({enabled:z.boolean(),revision:z.string().datetime(),reason:z.string().trim().min(10).max(1000)}).strict().parse(req.body);
   res.json(await setGuardEligibility(String(req.params.id),enabled,revision,reason,req.user!.userId));
+});
+// Cuenta de guardia propia de la persona (otro usuario y contraseña).
+router.get("/:id/guard-account", authorize("ADMIN"), async (req, res) => { res.json(await getGuardAccount(String(req.params.id))); });
+router.post("/:id/guard-account", authorize("ADMIN"), requireStepUp, rateLimit({ windowMs: 60000, maxRequests: 10 }), async (req, res) => {
+  res.status(201).json(await createGuardAccount(String(req.params.id), createGuardAccountSchema.parse(req.body), req.user!.userId));
 });
 router.put("/:id/permissions",authorize("ADMIN"),requireStepUp,async(req,res)=>{
   const {permission,enabled,revision,reason}=z.object({permission:z.enum(SPECIAL_PERMISSIONS),enabled:z.boolean(),revision:z.string().datetime(),reason:z.string().trim().min(10).max(1000)}).strict().parse(req.body);

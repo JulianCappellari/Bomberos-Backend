@@ -43,7 +43,7 @@ export async function deliverPush(sender: Sender = webpush.sendNotification, now
     else if (elapsed >= policy.maxAgeMs) code = "EXPIRED";
     else if (!trustedPushEndpoint(subscription.endpoint)) code = "INVALID_ENDPOINT";
     else if (policy.alert) {
-      const match = notification.dedupeKey?.match(/^alert:([^:]+):/);
+      const match = notification.dedupeKey?.match(/^alert(?:-command|-guard)?:([^:]+):/);
       const alert = match ? await prisma.alert.findFirst({ where: { id: match[1]!, status: "ACTIVE" }, select: { priority: true } }) : null;
       if (!alert) code = "ALERT_NOT_ACTIVE"; else priority = alert.priority;
     }

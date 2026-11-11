@@ -39,8 +39,10 @@ export function assertPresenceLocation(input: { latitude: number; longitude: num
 }
 export async function presenceState(userId: string) {
   return prisma.$transaction(async tx => {
-  const row = await tx.attendance.findFirst({ where: { userId, status: "OPEN", checkInQrId: { not: null }, checkInAt: { lte: new Date() }, checkInTrust: { not: "REJECTED" } }, orderBy: { checkInAt: "desc" }, select: { id: true, checkInAt: true, lastPresenceConfirmedAt: true, presenceResumeAt: true, promptShownAt: true, promptDueAt: true, station: { select: { name: true } } } });
+  const row = await tx.attendance.findFirst({ where: { userId, status: "OPEN", checkInQrId: { not: null }, checkInAt: { lte: new Date() }, checkInTrust: { not: "REJECTED" } }, orderBy: { checkInAt: "desc" }, select: { id: true, checkInAt: true, lastPresenceConfirmedAt: true, presenceResumeAt: true, promptShownAt: true, promptDueAt: true, station: { select: { name: true, requiresLocation: true } } } });
   if (!row) return { attendance: null, dueAt: null, needsConfirmation: false };
+  // La base sin ubicacion no pide confirmar presencia con GPS.
+  if (!row.station.requiresLocation) return { attendance: { id: row.id, stationName: row.station.name }, dueAt: null, needsConfirmation: false };
   const mission = await tx.missionCrew.findFirst({where:{userId,movement:{returnedAt:null}},select:{movementId:true}});
   if(mission)return {attendance:{id:row.id,stationName:row.station.name},dueAt:null,needsConfirmation:false,suspendedForMission:mission.movementId};
   const { dueAt, guardUntil } = await effectivePresenceDue(tx, userId, row);

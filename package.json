@@ -14,6 +14,7 @@
     "seed:verify": "tsx prisma/verify-seed.ts",
     "seed:accounts": "tsx prisma/verify-demo-accounts.ts",
     "repair:demo-business": "tsx prisma/repair-demo-business.ts",
+    "test:supplies": "tsx src/scripts/check-supplies-api.ts",
     "test:security": "tsx src/scripts/check-security-api.ts",
     "test:personal-equipment": "tsx src/scripts/check-personal-equipment-api.ts",
     "test:air": "tsx src/scripts/check-air-api.ts",

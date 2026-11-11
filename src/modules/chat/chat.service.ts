@@ -1,3 +1,4 @@
+import { sanitizeTaskPhotos } from "../work/work-photos";
 import { prisma } from "../../config/prisma";
 import { lockRow } from "../../utils/database-schema";
 import { isCommandRank, effectiveAccessRole } from "../../utils/firefighter-ranks";
@@ -7,6 +8,7 @@ import { assertCanSendTo, audienceMemberIds, visibleAudiences, type ChatAudience
 
 const VOTER_SELECT = { id: true, username: true, profile: { select: { fullName: true } } } as const;
 const MESSAGE_INCLUDE = {
+  attachments: { select: { id: true }, orderBy: { createdAt: "asc" as const } },
   poll: {
     include: {
       options: { orderBy: { position: "asc" as const }, include: { votes: { orderBy: { votedAt: "asc" as const }, select: { userId: true, votedAt: true, user: { select: VOTER_SELECT } } } } },
@@ -90,7 +92,12 @@ export async function createChatMessage(data: {
   authorUserId: string;
   audience?: ChatAudience;
   poll?: { options: string[]; allowMultiple: boolean };
+  photos?: string[];
+  links?: string[];
 }) {
+  // Las fotos se validan y recomprimen fuera de la transaccion (mismo filtro que las fotos de tareas).
+  const photos = data.photos?.length ? await sanitizeTaskPhotos(data.photos) : [];
+  const links = [...new Set(data.links ?? [])];
   return serializable(async (prisma) => {
   const audience = data.audience ?? "ALL";
   await assertCanSendTo(prisma, data.authorUserId, audience);
@@ -99,6 +106,8 @@ export async function createChatMessage(data: {
       body: data.body,
       authorUserId: data.authorUserId,
       audience,
+      links,
+      ...(photos.length ? { attachments: { create: photos.map((p) => ({ bytes: p.bytes, sha256: p.sha256 })) } } : {}),
       ...(data.poll ? { poll: { create: { allowMultiple: data.poll.allowMultiple, options: { create: data.poll.options.map((text, position) => ({ text, position })) } } } } : {}),
     },
     include: MESSAGE_INCLUDE,
@@ -113,6 +122,8 @@ export async function createChatMessage(data: {
       metadata: {
         bodyLength: data.body.length,
         audience,
+        photos: photos.length,
+        links,
         ...(data.poll ? { poll: { options: data.poll.options, allowMultiple: data.poll.allowMultiple } } : {}),
       },
     },
@@ -120,7 +131,7 @@ export async function createChatMessage(data: {
   // Un mensaje a un grupo se avisa a sus integrantes; los generales se ven en Comunicaciones.
   if (audience !== "ALL") {
     const members = (await audienceMemberIds(prisma, audience)).filter((id) => id !== data.authorUserId);
-    if (members.length) await prisma.memberNotification.createMany({ data: members.map((userId) => ({ userId, title: data.poll ? "Nueva encuesta para tu grupo" : "Nuevo mensaje para tu grupo", href: "/chat", body: data.body.slice(0, 300) })) });
+    if (members.length) await prisma.memberNotification.createMany({ data: members.map((userId) => ({ userId, title: data.poll ? "Nueva encuesta para tu grupo" : "Nuevo mensaje para tu grupo", href: "/chat", body: (data.body || (photos.length ? "Foto" : "Link")).slice(0, 300) })) });
   }
 
   return message;
@@ -333,4 +344,14 @@ export async function closePoll(actor: { userId: string; role: string }, pollId:
     }
     return tx.chatMessage.findUniqueOrThrow({ where: { id: poll.message.id }, include: MESSAGE_INCLUDE });
   });
+}
+
+
+/** Foto adjunta: solo la ve quien puede ver el mensaje (mismo grupo destinatario). */
+export async function chatAttachment(actorUserId: string, messageId: string, attachmentId: string) {
+  const row = await prisma.chatAttachment.findFirst({ where: { id: attachmentId, messageId, message: { deletedAt: null } }, select: { bytes: true, message: { select: { authorUserId: true, audience: true } } } });
+  if (!row) throw new OperationError(404, "Foto no encontrada");
+  const audiences = await visibleAudiences(prisma, actorUserId);
+  if (row.message.authorUserId !== actorUserId && !audiences.includes(row.message.audience as ChatAudience)) throw new OperationError(403, "Esta foto es de un mensaje para otro grupo");
+  return row.bytes;
 }

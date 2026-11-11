@@ -575,36 +575,45 @@ async function main() {
     const emergencyView=await call(`/members/profile/${users[2]!.id}`,200,guard);
     assert.equal(emergencyView.profile.dni,undefined);assert("emergencyContact" in emergencyView);
     await prisma.alert.update({where:{id:emergencyAlert.id},data:{status:"RESOLVED"}});
-    const primaryAccount=await call(`/users/${users[2]!.id}`,200,admin);
-    const eligibility={enabled:true,revision:primaryAccount.updatedAt,reason:"Habilitación operativa adicional para la prueba"};
-    const eligibilityPath=`/users/${users[2]!.id}/guard-eligibility`;
-    await call("/auth/access-mode",403,staff,"POST",{mode:"GUARD"});
-    await call(eligibilityPath,403,staff,"PUT",eligibility);
-    await call(eligibilityPath,200,admin,"PUT",eligibility);
-    const secondPersonal=await call("/auth/login",200,undefined,"POST",{username:users[2]!.username,password});
-    const dutyContext=await call("/auth/access-mode",200,staff,"POST",{mode:"GUARD"});
-    assert.equal(dutyContext.role,"GUARD");assert.equal(dutyContext.primaryRole,"FIREFIGHTER");assert.equal(dutyContext.profile.rank,"Bombero");
-    assert.equal((await call("/auth/me",200,secondPersonal.tokens.accessToken)).role,"FIREFIGHTER");
-    assert.equal((await call("/auth/me",200,staff)).role,"GUARD");
-    await call("/users",403,staff);await call("/audit-logs",403,staff);await call(`/members/profile/${users[0]!.id}`,403,staff);
-    const modeQr=await call("/attendance/qr-challenges",201,staff,"POST",{stationId:station.id});
-    await call("/auth/access-mode",200,staff,"POST",{mode:"PERSONAL"});
-    const existingOpen=await prisma.attendance.findFirstOrThrow({where:{userId:users[2]!.id,status:"OPEN"}});
-    const prepClose=await call(`/attendance/${existingOpen.id}/close`,200,guard,"POST",{reason:"Preparar prueba de ingreso con función de guardia"});
-    await call(`/attendance/corrections/${prepClose.correctionId}/decide`,200,sub,"POST",{approve:true,note:"Segunda autorizacion de prueba"});
-    await call("/auth/access-mode",200,staff,"POST",{mode:"GUARD"});
-    await call("/attendance/scan",403,staff,"POST",{qrToken:modeQr.qrToken,latitude:-33,longitude:-64,accuracy:5,deviceFingerprint:"guard-context-test"});
-    const grantedAccount=await call(`/users/${users[2]!.id}`,200,admin);
-    await call(eligibilityPath,200,admin,"PUT",{enabled:false,revision:grantedAccount.updatedAt,reason:"Revocación de función adicional en prueba"});
-    assert.equal((await call("/auth/me",200,staff)).role,"FIREFIGHTER");
-    await call("/attendance/qr-challenges",403,staff,"POST",{stationId:station.id});
-    const subAccount=await call(`/users/${users[1]!.id}`,200,admin);
-    await call(`/users/${users[1]!.id}/guard-eligibility`,200,admin,"PUT",{enabled:true,revision:subAccount.updatedAt,reason:"Función de guardia adicional del suboficial de prueba"});
-    await call("/auth/access-mode",200,sub,"POST",{mode:"GUARD"});
+    // --- Cuenta de guardia propia: otro usuario y contraseña, separada de la cuenta personal ---
+    await call("/auth/access-mode",410,staff,"POST",{mode:"GUARD"}); // la guardia ya no es un modo de la cuenta personal
+    const guardPath=`/users/${users[2]!.id}/guard-account`, guardPassword=randomUUID()+"!Gg7";
+    const guardInput={username:"guardia.prueba",password:guardPassword,reason:"Cuenta de guardia para la prueba de separación"};
+    await call(guardPath,403,staff,"POST",guardInput);
+    await call(`/users/${users[3]!.id}/guard-account`,400,admin,"POST",{...guardInput,username:"guardia.admin"});
+    await call(guardPath,400,admin,"POST",{...guardInput,password:"corta"});
+    const createdGuard=await call(guardPath,201,admin,"POST",guardInput);
+    assert.equal(createdGuard.account.username,"guardia.prueba");assert.equal(createdGuard.account.mustChangePassword,true);
+    await call(guardPath,409,admin,"POST",{...guardInput,username:"guardia.otra"});
+    assert.equal((await call(guardPath,200,admin)).account.onDuty,false);
+    await prisma.user.update({where:{id:createdGuard.account.id},data:{mustChangePassword:false}}); // en uso real la cambia al primer ingreso
+    assert(await prisma.attendance.findFirst({where:{userId:users[2]!.id,status:"OPEN"}}),"La persona tiene una permanencia personal abierta");
+    const guardLogin=await call("/auth/login",200,undefined,"POST",{username:"guardia.prueba",password:guardPassword});
+    const guardAccount=guardLogin.tokens.accessToken;
+    assert.equal(guardLogin.user.role,"GUARD");assert.equal(guardLogin.user.profile.rank,"Guardia");
+    assert(!(await prisma.attendance.findFirst({where:{userId:users[2]!.id,status:"OPEN"}})),"Al entrar con la cuenta de guardia se cierra la permanencia personal");
+    assert(await prisma.auditLog.findFirst({where:{action:"ATTENDANCE_CLOSED_FOR_GUARD",actorUserId:createdGuard.account.id}}));
+    assert.equal((await call(guardPath,200,admin)).account.onDuty,true);
+    await call("/users",403,guardAccount);await call("/audit-logs",403,guardAccount);
+    const scanBody=(qrToken:string,deviceFingerprint:string)=>({qrToken,latitude:-33,longitude:-64,accuracy:5,deviceFingerprint});
+    const ownGuardQr=await call("/attendance/qr-challenges",201,guardAccount,"POST",{stationId:station.id});
+    await call("/attendance/scan",403,staff,"POST",scanBody(ownGuardQr.qrToken,"own-phone")); // el QR de su propia cuenta de guardia
+    const otherQr=await call("/attendance/qr-challenges",201,guard,"POST",{stationId:station.id});
+    await call("/attendance/scan",403,staff,"POST",scanBody(otherQr.qrToken,"own-phone")); // su cuenta de guardia sigue abierta
+    await call("/attendance/scan",403,guardAccount,"POST",scanBody(otherQr.qrToken,"guard-tablet")); // la cuenta de guardia no ficha
+    await call("/auth/logout",200,guardAccount,"POST");
+    const back=await call("/attendance/scan",200,staff,"POST",scanBody(otherQr.qrToken,"own-phone")); // terminada la guardia, ficha como personal
+    assert.equal(back.action,"CHECK_IN");
+    // --- Base sin ubicación: se ficha solo con el QR ---
+    await call("/attendance/scan",428,sub,"POST",{qrToken:otherQr.qrToken,deviceFingerprint:"sub-phone"}); // cuartel con ubicación: la pide
+    const openBaseQr=await call("/attendance/qr-challenges",201,guard,"POST",{stationId:"base-sin-ubicacion"});
+    const baseIn=await call("/attendance/scan",200,sub,"POST",{qrToken:openBaseQr.qrToken,deviceFingerprint:"sub-phone"});
+    assert.equal(baseIn.action,"CHECK_IN");assert.equal(baseIn.distanceMeters,0);
+    assert.equal((await call("/members/presence",200,sub)).needsConfirmation,false,"La base sin ubicación no pide confirmar presencia por GPS");
+    assert.equal((await call("/attendance/scan",200,sub,"POST",{qrToken:openBaseQr.qrToken,deviceFingerprint:"sub-phone"})).action,"CHECK_OUT");
     const contextMessage=await call("/chat/messages",201,staff,"POST",{body:"Prueba de permisos de sesión"});
-    await call(`/chat/messages/${contextMessage.id}/pin`,403,sub,"PATCH",{isPinned:true});
-    await call(`/chat/messages/${contextMessage.id}`,403,sub,"DELETE",{});
-    await call("/auth/access-mode",200,sub,"POST",{mode:"PERSONAL"});
+    await call(`/chat/messages/${contextMessage.id}/pin`,403,guard,"PATCH",{isPinned:true});
+    await call(`/chat/messages/${contextMessage.id}`,403,guard,"DELETE",{});
     await call(`/chat/messages/${contextMessage.id}/pin`,200,sub,"PATCH",{isPinned:true});
     const streamAbort = new AbortController();
     const stream = await fetch(base + "/attendance/present/events", { headers: { Authorization: `Bearer ${staff}` }, signal: streamAbort.signal });
