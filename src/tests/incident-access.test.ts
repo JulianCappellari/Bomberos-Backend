@@ -9,9 +9,15 @@ test("Administrador y oficial autenticados como ADMIN no necesitan QR para redac
   await requireIncidentWrite(tx, { userId: "oficial", role: "ADMIN" });
 });
 
-test("Los otros roles necesitan una permanencia QR, incluso el guardia y el suboficial", async () => {
+test("La guardia de turno redacta sin QR: su cuenta no ficha para no sumar asistencia personal", async () => {
+  const tx = {} as Prisma.TransactionClient;
+  assert.equal(await canWriteIncident(tx, { userId: "guardia", role: "GUARD" }), true);
+  await requireIncidentWrite(tx, { userId: "guardia", role: "GUARD" });
+});
+
+test("Los otros roles necesitan una permanencia QR, incluso el suboficial", async () => {
   const tx = { attendance: { findFirst: async () => null }, missionCrew: { findFirst: async () => null } } as unknown as Prisma.TransactionClient;
-  for (const role of ["OPERATOR", "GUARD", "FIREFIGHTER"]) {
+  for (const role of ["OPERATOR", "FIREFIGHTER"]) {
     assert.equal(await canWriteIncident(tx, { userId: "user", role }), false);
     await assert.rejects(() => requireIncidentWrite(tx, { userId: "user", role }), /QR/);
   }

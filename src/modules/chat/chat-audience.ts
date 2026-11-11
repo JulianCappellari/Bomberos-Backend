@@ -1,3 +1,4 @@
+import { licensedDriverPairs } from "../incidents/driver-eligibility";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../config/prisma";
 import { normalizeRank } from "../../utils/firefighter-ranks";
@@ -19,7 +20,7 @@ async function todayGuardIds(db: Db) {
   return new Set(rows.map((row) => row.userId));
 }
 async function driverIds(db: Db) {
-  const rows = await db.vehicleDriverAuthorization.findMany({ where: { validUntil: { gte: new Date(stationDate()) } }, select: { userId: true } });
+  const rows = [...await db.vehicleDriverAuthorization.findMany({ where: { validUntil: { gte: new Date(stationDate()) } }, select: { userId: true } }), ...await licensedDriverPairs(db)];
   return new Set(rows.map((row) => row.userId));
 }
 

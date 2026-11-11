@@ -21,6 +21,7 @@ export async function createAsset(data: {
   lastCheckDate?: string | null;
   vehicle?: {
     kind?: string;
+    licenseCategory?: string;
     unitNumber: string;
     plate?: string | null;
     year?: number;
@@ -67,6 +68,7 @@ export async function createAsset(data: {
               create: {
                 unitNumber: data.vehicle!.unitNumber,
                 kind: data.vehicle?.kind || "UNCLASSIFIED",
+                licenseCategory: data.vehicle?.licenseCategory || "UNSET",
                 plate: normalizeNullable(data.vehicle?.plate),
                 year: data.vehicle?.year,
                 mileage: data.vehicle?.mileage,
@@ -288,6 +290,7 @@ export async function upsertVehicleData(
   assetId: string,
   data: {
     kind?: string;
+    licenseCategory?: string;
     unitNumber?: string;
     plate?: string | null;
     year?: number;
@@ -355,6 +358,7 @@ export async function upsertVehicleData(
         data: {
           unitNumber: data.unitNumber,
           kind: data.kind,
+          licenseCategory: data.licenseCategory,
           plate: data.plate === undefined ? undefined : normalizeNullable(data.plate),
           year: data.year,
           mileage: data.mileage,
@@ -366,6 +370,7 @@ export async function upsertVehicleData(
           assetId,
           unitNumber: data.unitNumber!,
           kind: data.kind || "UNCLASSIFIED",
+          licenseCategory: data.licenseCategory || "UNSET",
           plate: normalizeNullable(data.plate),
           year: data.year,
           mileage: data.mileage,

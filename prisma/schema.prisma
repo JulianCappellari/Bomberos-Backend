@@ -694,6 +694,8 @@ model Vehicle {
   id                   String   @id @default(cuid())
   assetId              String   @unique
   unitNumber           String   @unique @db.VarChar(20)
+  // Que licencia exige: LIGHT, MEDIUM, HEAVY, EXTRA_HEAVY, ARTICULATED o UNSET (habilitacion manual).
+  licenseCategory      String   @default("UNSET") @db.VarChar(20)
   plate                String?  @unique @db.VarChar(20)
   year                 Int?
   mileage              Int?
@@ -1388,6 +1390,8 @@ model PersonalDeclaration {
   licenseNumber String? @db.VarChar(80)
   issuer String? @db.VarChar(160)
   licenseClasses String[] @default([])
+  // Datos propios de cada clase: [{ code, grantedOn, expiresOn }] (la tarjeta trae fechas por clase).
+  licenseClassDetails Json?
   issuedOn DateTime? @db.Date
   expiresOn DateTime? @db.Date
   revision Int @default(1)

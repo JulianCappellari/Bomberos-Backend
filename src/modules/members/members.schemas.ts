@@ -1,4 +1,10 @@
 import { z } from "zod";
+import { LICENSE_CLASS_CODES, normalizeLicenseClass } from "../../utils/license-classes";
+// Cada clase de la licencia con sus propias fechas (otorgamiento y, si difiere, vencimiento).
+const classItem = z.union([
+  z.string().transform((code) => ({ code: normalizeLicenseClass(code), grantedOn: null as string | null, expiresOn: null as string | null })),
+  z.object({ code: z.string().transform(normalizeLicenseClass), grantedOn: z.string().date().optional().nullable(), expiresOn: z.string().date().optional().nullable() }).strict().transform((v) => ({ code: v.code, grantedOn: v.grantedOn ?? null, expiresOn: v.expiresOn ?? null })),
+]).refine((v) => (LICENSE_CLASS_CODES as readonly string[]).includes(v.code), "Clase de licencia inexistente: elegí una de la lista oficial (ej. B.1, C.1, D.4)");
 export const personalProfileSchema = z.object({
   phone: z.string().trim().max(40), altPhone: z.string().trim().max(40), address: z.string().trim().max(180),
   bloodType: z.enum(["", "A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]),
@@ -8,7 +14,7 @@ export const personalProfileSchema = z.object({
 }).strict();
 export const licenseSchema = z.object({
   number: z.string().trim().min(3).max(80), issuer: z.string().trim().min(3).max(160),
-  classes: z.array(z.string().trim().toUpperCase().regex(/^[A-Z0-9.]{1,12}$/)).min(1).max(15).refine((values) => new Set(values).size === values.length, "No repita clases"),
+  classes: z.array(classItem).min(1).max(21).refine((values) => new Set(values.map((v) => v.code)).size === values.length, "No repita clases"),
   issuedOn: z.string().date(), expiresOn: z.string().date(),
 }).strict().refine((value) => value.expiresOn >= value.issuedOn, "El vencimiento debe ser igual o posterior a la emision");
 export const clothingSchema = z.object({ brand: z.string().trim().max(120), model: z.string().trim().max(120), size: z.string().trim().min(1).max(40), condition: z.enum(["OK", "REVIEW", "OUT", "UNKNOWN"]), novelties: z.string().trim().max(2000) }).strict();

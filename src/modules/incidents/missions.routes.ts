@@ -13,6 +13,8 @@ import { normalizeRank } from "../../utils/firefighter-ranks";
 import { lockRow } from "../../utils/database-schema";
 import { activePeople } from "../work/work.service";
 import { notify, notifyCommand } from "../members/notifications.service";
+import { driverLicenseCheck, licensedDriverPairs } from "./driver-eligibility";
+import { normalizeLicenseClass, VEHICLE_LICENSE_CATEGORIES, VehicleLicenseCategory } from "../../utils/license-classes";
 const router = Router();
 const id = z.string().min(1).max(100);
 const commandRole = (role?: string) => ["ADMIN", "OPERATOR", "GUARD"].includes(role || "");
@@ -24,17 +26,19 @@ router.get("/options", async (req,res) => {
     await requirePresentOrCommand(tx, req);
     const [incidents,assets,people,authorizations] = await Promise.all([
       tx.incident.findMany({select:{id:true,title:true,status:true},orderBy:{occurredAt:"desc"},take:100}),
-      tx.asset.findMany({where:{deletedAt:null,assetType:"VEHICLE"},select:{id:true,name:true,status:true,lastCheckDate:true,maintenanceJobs:{where:{status:{in:["OPEN","IN_PROGRESS"]}},select:{blocksOperation:true}}},orderBy:{name:"asc"}}),
+      tx.asset.findMany({where:{deletedAt:null,assetType:"VEHICLE"},select:{id:true,name:true,status:true,lastCheckDate:true,vehicle:{select:{licenseCategory:true}},maintenanceJobs:{where:{status:{in:["OPEN","IN_PROGRESS"]}},select:{blocksOperation:true}}},orderBy:{name:"asc"}}),
       tx.user.findMany({where:{deletedAt:null,isActive:true,isPendingApproval:false},select:PUBLIC_USER_SELECT}),
       tx.vehicleDriverAuthorization.findMany({include:{license:{select:{revision:true,deletedAt:true,issuedOn:true,expiresOn:true,licenseClasses:true}}}}),
     ]);
     const today=new Date(stationDate());
-    return {incidents,assets:assets.map(({maintenanceJobs,...asset})=>{const hasBlockingIssue=maintenanceJobs.some(job=>job.blocksOperation),hasNonBlockingIssue=maintenanceJobs.some(job=>!job.blocksOperation),recentCheck=Boolean(asset.lastCheckDate&&asset.lastCheckDate>=new Date(Date.now()-7*86400000));return {...asset,dispatchable:!hasBlockingIssue&&(asset.status==="OPERATIONAL"||asset.status==="MAINTENANCE"&&(hasNonBlockingIssue||!recentCheck)),requiresException:asset.status==="MAINTENANCE"||hasNonBlockingIssue||!recentCheck,expiredControl:!recentCheck,hasBlockingIssue};}),people,authorizations:authorizations.map(({license,...row})=>({...row,licenseCurrent:Boolean(license&&!license.deletedAt&&license.revision===row.licenseRevision&&license.issuedOn&&license.issuedOn<=today&&license.expiresOn&&license.expiresOn>=today&&license.licenseClasses.includes(row.requiredClass))}))};
+    // Conductores habilitados por su licencia segun la categoria de cada movil (sin tramite de jefatura).
+    const licensed=await licensedDriverPairs(tx,today);
+    return {licensed,incidents,assets:assets.map(({maintenanceJobs,vehicle,...asset})=>{const category=(vehicle?.licenseCategory||"UNSET") as VehicleLicenseCategory;const licenseRule={category,label:VEHICLE_LICENSE_CATEGORIES[category]?.label??"",required:VEHICLE_LICENSE_CATEGORIES[category]?.required??[]};const hasBlockingIssue=maintenanceJobs.some(job=>job.blocksOperation),hasNonBlockingIssue=maintenanceJobs.some(job=>!job.blocksOperation),recentCheck=Boolean(asset.lastCheckDate&&asset.lastCheckDate>=new Date(Date.now()-7*86400000));return {...asset,licenseRule,dispatchable:!hasBlockingIssue&&(asset.status==="OPERATIONAL"||asset.status==="MAINTENANCE"&&(hasNonBlockingIssue||!recentCheck)),requiresException:asset.status==="MAINTENANCE"||hasNonBlockingIssue||!recentCheck,expiredControl:!recentCheck,hasBlockingIssue};}),people,authorizations:authorizations.map(({license,...row})=>({...row,licenseCurrent:Boolean(license&&!license.deletedAt&&license.revision===row.licenseRevision&&license.issuedOn&&license.issuedOn<=today&&license.expiresOn&&license.expiresOn>=today&&license.licenseClasses.includes(row.requiredClass))}))};
   }, { isolationLevel: "RepeatableRead" });
   res.json(result);
 });
 router.put("/authorizations", authorize("ADMIN","OPERATOR"), async (req,res) => {
-  const input=z.object({assetId:id,userId:id,requiredClass:z.string().trim().toUpperCase().regex(/^[A-Z0-9.]{1,12}$/),validUntil:z.string().date().optional(),reason:z.string().trim().min(10).max(1000),revision:z.number().int().min(0)}).strict().parse(req.body);
+  const input=z.object({assetId:id,userId:id,requiredClass:z.string().trim().toUpperCase().regex(/^[A-Z0-9.]{1,12}$/).transform(normalizeLicenseClass),validUntil:z.string().date().optional(),reason:z.string().trim().min(10).max(1000),revision:z.number().int().min(0)}).strict().parse(req.body);
   if(input.userId===req.user!.userId) throw new OperationError(403,"Otra persona de jefatura debe habilitarlo como conductor");
   res.json(await serializable(async tx=>{
     await activePeople(tx,[input.userId]);
@@ -96,10 +100,20 @@ router.post("/", async(req,res)=>{
     await activePeople(tx,input.userIds);
     if(!historical&&await tx.missionMovement.findFirst({where:{returnedAt:null,OR:[{assetId:input.assetId},{crew:{some:{userId:{in:input.userIds}}}}]}}))throw new OperationError(409,"Movil o personal ya desplegado en otra salida");
     if(historical&&await tx.missionMovement.findFirst({where:{incident:{voidedAt:null},departedAt:{lt:times.returnedAt!},OR:[{returnedAt:null},{returnedAt:{gt:times.departedAt}}],AND:[{OR:[{assetId:input.assetId},{crew:{some:{userId:{in:input.userIds}}}}]}]}}))throw new OperationError(409,"El móvil o el personal figuran en otra salida en ese horario");
-    const permit=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:input.assetId,userId:input.driverUserId}}});
     const today=new Date(stationDate());
-    const license=permit?.licenseId?await tx.personalDeclaration.findFirst({where:{id:permit.licenseId,revision:permit.licenseRevision??-1,userId:input.driverUserId,category:"DRIVER_LICENSE",deletedAt:null,licenseClasses:{has:permit.requiredClass},issuedOn:{lte:today},expiresOn:{gte:today}}}):null;
-    if(!permit||permit.validUntil<today||!license){unauthorizedDriver=true;throw new OperationError(403,"El conductor necesita habilitación y la misma versión vigente de licencia revisada por jefatura; si cambió debe revalidarse");}
+    // Movil con categoria de licencia: alcanza con una licencia vigente que cubra las clases exigidas.
+    // Movil sin configurar: rige la habilitacion manual de jefatura respaldada por la licencia.
+    const byLicense=await driverLicenseCheck(tx,input.assetId,input.driverUserId,today);
+    let driverProof:{via:string;requiredClass:string;licenseId:string;licenseRevision:number;validUntil:string|null;authorizationRevision:number|null};
+    if(byLicense.configured){
+      if(!byLicense.eligible||!byLicense.licenseId){unauthorizedDriver=true;throw new OperationError(403,`El conductor no tiene licencia vigente para este móvil: le falta ${byLicense.missing.join(" y ")}. Exige ${byLicense.required.join(" + ")}`);}
+      driverProof={via:"LICENSE",requiredClass:byLicense.required.join("+"),licenseId:byLicense.licenseId,licenseRevision:byLicense.licenseRevision!,validUntil:null,authorizationRevision:null};
+    }else{
+      const permit=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:input.assetId,userId:input.driverUserId}}});
+      const license=permit?.licenseId?await tx.personalDeclaration.findFirst({where:{id:permit.licenseId,revision:permit.licenseRevision??-1,userId:input.driverUserId,category:"DRIVER_LICENSE",deletedAt:null,licenseClasses:{has:permit.requiredClass},issuedOn:{lte:today},expiresOn:{gte:today}}}):null;
+      if(!permit||permit.validUntil<today||!license){unauthorizedDriver=true;throw new OperationError(403,"El conductor necesita habilitación y la misma versión vigente de licencia revisada por jefatura; si cambió debe revalidarse. También podés configurar qué licencia exige el móvil para que se habilite solo");}
+      driverProof={via:"AUTHORIZATION",requiredClass:permit.requiredClass,licenseId:license.id,licenseRevision:license.revision,validUntil:permit.validUntil.toISOString(),authorizationRevision:permit.revision};
+    }
     const row=await tx.missionMovement.create({data:{incidentId:input.incidentId,assetId:input.assetId,driverUserId:input.driverUserId,leaderUserId:input.leaderUserId,createdByUserId:req.user!.userId,dispatchExceptionReason:requiresException?input.dispatchExceptionReason:null,departedAt:times.departedAt,arrivedAt:times.arrivedAt,crew:{create:input.userIds.map(userId=>({userId}))}}});
     if(historical){
       const departure=await tx.vehicleDeparture.create({data:{operationKey:randomUUID(),requestHash:createHash("sha256").update(row.id).digest("hex"),assetId:input.assetId,departedAt:times.departedAt,returnedAt:times.returnedAt!,purpose:incident.title.slice(0,200),notes:"Salida recargada al rehacer la intervencion "+incident.id,createdByUserId:req.user!.userId,crew:{create:input.userIds.map(userId=>({userId,isLeader:userId===input.leaderUserId}))}}});
@@ -110,7 +124,7 @@ router.post("/", async(req,res)=>{
     await tx.attendance.updateMany({where:{userId:{in:input.userIds},status:"OPEN",promptShownAt:{not:null}},data:{promptShownAt:null,promptDueAt:null}});
     await tx.incidentVehicle.upsert({where:{incidentId_assetId:{incidentId:input.incidentId,assetId:input.assetId}},create:{incidentId:input.incidentId,assetId:input.assetId},update:{}});
     for(const userId of input.userIds)await tx.incidentAssignment.upsert({where:{incidentId_userId:{incidentId:input.incidentId,userId}},create:{incidentId:input.incidentId,userId},update:{}});
-    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:requiresException?"MISSION_DEPARTED_EXCEPTION":"MISSION_DEPARTED",entityType:"MissionMovement",entityId:row.id,metadata:{...input,requiredClass:permit.requiredClass,authorizationRevision:permit.revision,authorizationValidUntil:permit.validUntil.toISOString(),licenseId:license.id,licenseRevision:license.revision,licenseExpiresOn:license.expiresOn!.toISOString()}}});
+    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:requiresException?"MISSION_DEPARTED_EXCEPTION":"MISSION_DEPARTED",entityType:"MissionMovement",entityId:row.id,metadata:{...input,driverProof}}});
     await notify(tx,input.userIds,"Salida a intervencion registrada","/incidents","La verificacion de presencia queda suspendida hasta el retorno registrado.");
     if(requiresException&&input.dispatchExceptionReason){
       await tx.incidentNotebookEntry.create({data:{incidentId:input.incidentId,authorUserId:req.user!.userId,category:"VEHICLE",title:`Salida excepcional: ${asset.name}`,body:`${expiredControl?"El móvil salió con el control semanal vencido.":"El móvil salió con una falla no bloqueante."} Motivo y constancia: ${input.dispatchExceptionReason}`,occurredAt:new Date()}});

@@ -29,11 +29,19 @@ export async function incidentSheetContext(tx:Prisma.TransactionClient,id:string
   if(incident.closedAt && incident.closedAt < until) until=incident.closedAt;
   const people=await tx.attendance.findMany({where:{checkInQrId:{not:null},checkInAt:{lt:until},checkInTrust:{not:"REJECTED"},OR:[{checkOutAt:{gt:incident.occurredAt}},{status:"OPEN"}]},select:{userId:true,checkInAt:true,checkOutAt:true,user:{select:{username:true,profile:{select:{fullName:true}}}}}});
   const missions=people.length?await tx.missionCrew.findMany({where:{userId:{in:people.map(p=>p.userId)},movement:{departedAt:{lt:until},OR:[{returnedAt:null},{returnedAt:{gt:incident.occurredAt}}]}},select:{userId:true,movement:{select:{departedAt:true,returnedAt:true}}}}):[];
-  const base=new Map<string,string>();
+  // Una persona puede estar en la base y salir despues en otra unidad (o volver y quedar en base):
+  // la base son los tramos con presencia QR que no se superponen con ninguna salida.
+  const base=new Map<string,string>(), segments=new Map<string,Array<{from:Date;to:Date}>>();
   for(const p of people){
     const start=Math.max(+incident.occurredAt,+p.checkInAt!),end=Math.min(+until,+(p.checkOutAt||until));
     const away=missions.filter(m=>m.userId===p.userId).map(m=>({start:Math.max(start,+m.movement.departedAt),end:Math.min(end,+(m.movement.returnedAt||until))})).filter(m=>m.end>m.start);
-    if(end-start>unionMilliseconds(away))base.set(p.userId,p.user.profile?.fullName||p.user.username);
+    if(end-start>unionMilliseconds(away)){
+      base.set(p.userId,p.user.profile?.fullName||p.user.username);
+      let cursor=start;const free:Array<{from:Date;to:Date}>=[];
+      for(const a of away.sort((x,y)=>x.start-y.start)){if(a.start>cursor)free.push({from:new Date(cursor),to:new Date(a.start)});cursor=Math.max(cursor,a.end);}
+      if(end>cursor)free.push({from:new Date(cursor),to:new Date(end)});
+      segments.set(p.userId,[...(segments.get(p.userId)||[]),...free.filter(f=>+f.to-+f.from>=60000)]);
+    }
   }
   // G06/G14: quien recibio la alerta y respondio "Voy" puede figurar en la planilla sin escanear el QR,
   // salvo durante el tiempo en que integro una dotacion en salida.
@@ -43,7 +51,10 @@ export async function incidentSheetContext(tx:Prisma.TransactionClient,id:string
     const users=await tx.user.findMany({where:{id:{in:going},isActive:true,isPendingApproval:false,deletedAt:null},select:{id:true,username:true,profile:{select:{fullName:true}}}});
     for(const u of users)if(!deployed.has(u.id))base.set(u.id,u.profile?.fullName||u.username);
   }
-  return {incident,baseCandidates:[...base].map(([id,name])=>({id,name}))};
+  // Salidas de cada candidato en esta intervencion: para mostrar "en base de … a …, luego salio en …".
+  const departures=new Map<string,Array<{unit:string;departedAt:Date;returnedAt:Date|null}>>();
+  for(const m of incident.movements)for(const c of m.crew)departures.set(c.userId,[...(departures.get(c.userId)||[]),{unit:m.asset.vehicle?.unitNumber||m.asset.name,departedAt:m.departedAt,returnedAt:m.returnedAt}]);
+  return {incident,baseCandidates:[...base].map(([id,name])=>({id,name,segments:segments.get(id)||[],respondedOnly:!segments.has(id),departures:departures.get(id)||[]}))};
 }
 export async function finalizeSheet(tx:Prisma.TransactionClient,id:string,now:Date,actor:string){
   const data=await incidentSheetContext(tx,id,now);

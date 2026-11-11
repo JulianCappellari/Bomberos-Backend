@@ -168,6 +168,27 @@ async function main() {
     assert.equal(third.requestNumber, 61, "Sigue después del número corregido");
     assert(await prisma.auditLog.findFirst({ where: { action: "INCIDENT_REQUEST_NUMBER_CHANGED" } }));
 
+    // --- Licencias por clase: el móvil exige su categoría y la licencia vigente habilita sola ---
+    const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+    const licenseBase = { category: "DRIVER_LICENSE", title: "Licencia de conducir", details: "Declaración del titular", license: { number: "LIC-123", issuer: "Municipalidad de Sampacho", issuedOn: day(-400), expiresOn: day(800) } };
+    await call("/members/declarations", 400, bombero, "POST", { ...licenseBase, license: { ...licenseBase.license, classes: ["Z9"] } });
+    const onlyB = await call("/members/declarations", 201, bombero, "POST", { ...licenseBase, license: { ...licenseBase.license, classes: ["b1"] } });
+    assert.deepEqual(onlyB.licenseClasses, ["B.1"], "Se normaliza al formato oficial");
+    const engine = await prisma.asset.create({ data: { name: "Autobomba mediana", assetType: "VEHICLE", status: "OPERATIONAL", lastCheckDate: new Date(), vehicle: { create: { unitNumber: "5", licenseCategory: "MEDIUM" } } } });
+    const dispatch = { incidentId: second.id, assetId: engine.id, driverUserId: bomberoUser!.id, leaderUserId: bomberoUser!.id, userIds: [bomberoUser!.id] };
+    const denied = await call("/incidents/logistics", 403, officer, "POST", dispatch);
+    assert.match(denied.message, /C\.1 y D\.4/, "Dice qué clases faltan");
+    await call(`/members/declarations/${onlyB.id}`, 200, bombero, "PUT", { ...licenseBase, revision: onlyB.revision, license: { ...licenseBase.license, classes: [{ code: "C.1", grantedOn: day(-300) }, { code: "D.4", grantedOn: day(-300), expiresOn: day(-1) }] } });
+    const expiredD4 = await call("/incidents/logistics", 403, officer, "POST", dispatch);
+    assert.match(expiredD4.message, /D\.4/, "Una clase vencida no habilita aunque la licencia siga vigente");
+    const current = await prisma.personalDeclaration.findUniqueOrThrow({ where: { id: onlyB.id } });
+    await call(`/members/declarations/${onlyB.id}`, 200, bombero, "PUT", { ...licenseBase, revision: current.revision, license: { ...licenseBase.license, classes: [{ code: "C.2", grantedOn: day(-300) }, { code: "D.4", grantedOn: day(-300) }] } });
+    assert((await call("/incidents/logistics/options", 200, officer)).licensed.some((r: { assetId: string; userId: string }) => r.assetId === engine.id && r.userId === bomberoUser!.id), "C.2 incluye C.1: queda habilitado para el móvil");
+    const departed = await call("/incidents/logistics", 201, officer, "POST", dispatch);
+    assert.equal((await prisma.auditLog.findFirstOrThrow({ where: { entityId: departed.id, action: "MISSION_DEPARTED" } }).then((r) => (r.metadata as { driverProof: { via: string } }).driverProof.via)), "LICENSE");
+    // La guardia de turno edita la planilla sin fichar con QR.
+    assert.equal((await call(`/incidents/${second.id}/sheet`, 200, guard)).canWrite, true);
+
     // --- Comisión Directiva: cuenta civil, no opera como bombero ---
     const openQr = await call("/attendance/qr-challenges", 201, guard, "POST", { stationId: "base-sin-ubicacion" });
     await call("/attendance/scan", 403, board, "POST", { qrToken: openQr.qrToken, deviceFingerprint: "board-phone" });

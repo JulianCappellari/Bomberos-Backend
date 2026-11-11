@@ -483,8 +483,8 @@ async function main() {
     await prisma.alertResponse.create({data:{alertId:accessAlert.id,userId:users[0]!.id,response:"NOT_GOING"}});
     const accessIncident=await prisma.incident.create({data:{title:"Planilla sin convocatoria ni QR",type:"OTHER",location:"Lugar sintetico",description:"Verificacion de lectura universal y edicion restringida",alertId:accessAlert.id,createdByUserId:users[4]!.id}});
     const accessPath=`/incidents/${accessIncident.id}/sheet`, accessPlan={...plan,baseUserIds:[]};
-    assert.equal((await call(accessPath,200,guard)).canWrite,false);
-    await call(accessPath,403,guard,"PUT",accessPlan);
+    // La guardia de turno completa la planilla desde el cuartel aunque su cuenta no fiche con QR.
+    assert.equal((await call(accessPath,200,guard)).canWrite,true);
     assert.equal((await call(accessPath,200,technicalToken)).canWrite,true);
     await call(accessPath,200,technicalToken,"PUT",accessPlan);
     assert.equal((await call(accessPath,200,admin)).canWrite,true);
@@ -494,11 +494,12 @@ async function main() {
     assert.equal((await prisma.incidentSheet.findUniqueOrThrow({where:{incidentId:accessIncident.id}})).authorId,technicalAdmin.id);
     assert.equal((await call(accessPath,200,guard)).sheet.revision,2);
     await call(accessPath,409,technicalToken,"PUT",accessPlan);
+    await call(accessPath,200,guard,"PUT",{...accessPlan,revision:2,notes:"Datos completados por la guardia de turno"});
     const accessEntry={category:"NOTE",title:"Anotacion de participante con QR",body:"Se registra una novedad operativa de prueba",occurredAt:new Date(Date.now()-1000).toISOString()};
     const entry=await call(`/work/incidents/${accessIncident.id}/notebook`,201,staff,"POST",accessEntry);
     await call(`/work/incidents/${accessIncident.id}/notebook`,200,guard);
     await call(`/work/incidents/${accessIncident.id}/notebook/${entry.id}`,200,technicalToken,"PUT",{...accessEntry,revision:1,body:"Correccion administrativa de entrada ajena con historial"});
-    await call(`/work/incidents/${accessIncident.id}/notebook`,403,guard,"POST",accessEntry);
+    await call(`/work/incidents/${accessIncident.id}/notebook`,201,guard,"POST",accessEntry); // la guardia de turno tambien anota en la bitacora
     await call(`/incidents/${accessIncident.id}/close`,200,technicalToken,"PATCH",closing);
     assert.equal((await call(accessPath,200,guard)).canWrite,false);
     assert.equal((await call(accessPath,200,technicalToken)).canAddAnnex,true);
@@ -507,7 +508,6 @@ async function main() {
     const legacy=await prisma.incident.create({data:{title:"Historica sin planilla digital",type:"OTHER",location:"Base ficticia",description:"Historial consultable",status:"CLOSED",closedAt:new Date(),createdByUserId:technicalAdmin.id}});
     assert.equal((await call(`/incidents/${legacy.id}/sheet`,200,guard)).canWrite,false);
     assert.equal((await call(sheetPath,200,staff)).context.incident.movements.length,2);
-    await call(sheetPath,403,guard,"PUT",plan);
     await call(sheetPath,400,staff,"PUT",{...plan,baseUserIds:[users[0]!.id]});
     const savedSheet=await call(sheetPath,200,staff,"PUT",plan);
     assert.equal(savedSheet.callerName,plan.callerName);assert.equal(savedSheet.callerPhone,plan.callerPhone);
@@ -526,7 +526,7 @@ async function main() {
     assert.equal(amended.sheet.notes,finalSheet.sheet.notes);
     assert.equal((await call(sheetPath,200,staff)).canAddAnnex,true);
     const annex={category:"NOTE",title:"Detalle posterior",body:"Se agrega una novedad luego del cierre sin alterar la planilla.",occurredAt:new Date(Date.now()-1000).toISOString()};
-    await call(`/work/incidents/${incident.id}/notebook`,403,guard,"POST",annex);
+    await call(`/work/incidents/${incident.id}/notebook`,201,guard,"POST",annex); // la guardia de turno agrega anexos posteriores
     const createdAnnex=await call(`/work/incidents/${incident.id}/notebook`,201,staff,"POST",annex);
     assert.equal((await call(sheetPath,200,staff)).notebookEntries.some((entry:{id:string})=>entry.id===createdAnnex.id),true);
     assert.equal(await prisma.auditLog.count({where:{entityType:"IncidentNotebookEntry",entityId:createdAnnex.id,action:"INCIDENT_POST_CLOSURE_ANNEX_CREATED"} }),1);

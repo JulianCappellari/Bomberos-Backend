@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { VEHICLE_LICENSE_CATEGORY_KEYS } from "../../utils/license-classes";
 
 const vehicleSchema = z.object({
   kind: z.enum(["UNCLASSIFIED", "ENGINE", "TANKER", "RESCUE", "AMBULANCE", "SUPPORT", "OTHER"]).optional(),
+  licenseCategory: z.enum(VEHICLE_LICENSE_CATEGORY_KEYS).optional(),
   unitNumber: z.string().min(1).max(20),
   plate: z.string().max(20).optional().nullable(),
   year: z.number().int().optional(),
@@ -28,6 +30,7 @@ export const updateAssetSchema = z.object({
 
 export const upsertVehicleDataSchema = z.object({
   kind: z.enum(["UNCLASSIFIED", "ENGINE", "TANKER", "RESCUE", "AMBULANCE", "SUPPORT", "OTHER"]).optional(),
+  licenseCategory: z.enum(VEHICLE_LICENSE_CATEGORY_KEYS).optional(),
   unitNumber: z.string().min(1).max(20).optional(),
   plate: z.string().max(20).optional().nullable(),
   year: z.number().int().optional(),

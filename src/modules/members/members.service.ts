@@ -62,7 +62,7 @@ export async function declarations(userId: string, category: "CLOTHING" | "DRIVE
 }
 export async function saveDeclaration(id: string | null, input: z.infer<typeof declarationSchema> & { revision?: number }, actor: Actor) {
   if (input.license && input.license.issuedOn > stationDate()) throw new OperationError(400, "La fecha de emision no puede ser futura");
-  const fields = { title: input.title, details: input.details, licenseNumber: input.license?.number || null, issuer: input.license?.issuer || null, licenseClasses: input.license?.classes || [], issuedOn: input.license ? new Date(input.license.issuedOn) : null, expiresOn: input.license ? new Date(input.license.expiresOn) : null };
+  const fields = { title: input.title, details: input.details, licenseNumber: input.license?.number || null, issuer: input.license?.issuer || null, licenseClasses: input.license?.classes.map((c) => c.code) || [], licenseClassDetails: input.license ? input.license.classes : undefined, issuedOn: input.license ? new Date(input.license.issuedOn) : null, expiresOn: input.license ? new Date(input.license.expiresOn) : null };
   Object.assign(fields, { clothingBrand: input.clothing?.brand ?? null, clothingModel: input.clothing?.model ?? null, clothingSize: input.clothing?.size ?? null, clothingCondition: input.clothing?.condition ?? null, clothingNovelties: input.clothing?.novelties ?? null });
   return serializable(async (tx) => {
     let row;
