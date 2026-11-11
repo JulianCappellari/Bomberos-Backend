@@ -191,6 +191,12 @@ async function main() {
     await call(`/incidents/${joint.id}/agencies`, 201, officer, "POST", { ...agency, unit: "Patrullero 300" });
     assert.equal((await call(`/station/reports/compare?year=${new Date().getFullYear()}`, 200, officer)).current.agencies.POLICE, 1);
 
+    // Estado de la base: publico, sin datos personales, y detecta migraciones pendientes.
+    const { checkMigrations } = await import("../utils/migration-check");
+    assert.deepEqual((await checkMigrations()).pending, [], "El esquema de prueba tiene todas las migraciones");
+    const health = await call("/health", 200);
+    assert.equal(health.status, "ok"); assert.equal(health.database, "actualizada");
+
     console.log(`Cuartel: ${paths} caminos HTTP aprobados; agenda, refuerzos, bolsa de reemplazos, mensajes por grupo, guardias, comparativa, escalafón, biblioteca y tablero.`);
   } finally {
     if (server) await new Promise<void>((r) => server!.close(() => r()));

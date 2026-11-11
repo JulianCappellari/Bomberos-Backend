@@ -1,3 +1,4 @@
+import { checkMigrations } from "./utils/migration-check";
 import http from "http";
 import { app } from "./app";
 import { env } from "./config/env";
@@ -18,4 +19,5 @@ server.listen(env.port, () => {
   server.once("close", startComplianceJobs());
   server.once("close", startPushJob());
   console.log(`Server running on port ${env.port}`);
+  void checkMigrations();
 });

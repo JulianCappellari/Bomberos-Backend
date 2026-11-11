@@ -22,6 +22,12 @@ export function errorHandler(
     });
   }
 
+  // Base desactualizada (falta una tabla o columna del codigo nuevo): mensaje claro y la pista en el registro.
+  if (err instanceof Prisma.PrismaClientKnownRequestError && ["P2021", "P2022"].includes(err.code)) {
+    console.error("BASE DE DATOS DESACTUALIZADA: falta aplicar migraciones", { code: err.code, meta: err.meta, path: req.path });
+    return res.status(503).json({ message: "El servidor se actualizó pero su base de datos todavía no. Avisá a administración para aplicar las migraciones pendientes." });
+  }
+
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     const responses: Record<string, { status: number; message: string }> = {
       P2002: { status: 409, message: "El registro ya existe o fue creado por otro usuario." },
@@ -43,6 +49,7 @@ export function errorHandler(
   }
 
   // Error generico
-  console.error("Unhandled request error", { name: err?.name, code: err?.code });
+  // Sin datos personales: tipo, codigo, metadatos de Prisma (tabla/columna) y la ruta.
+  console.error("Unhandled request error", { name: err?.name, code: err?.code, meta: err?.meta, method: req.method, path: req.path });
   return res.status(500).json({ message: "Error interno del servidor. Intente nuevamente." });
 }
