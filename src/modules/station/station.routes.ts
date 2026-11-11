@@ -1,3 +1,4 @@
+import { requireStepUp } from "../../middlewares/step-up.middleware";
 import { Router } from "express";
 import { z } from "zod";
 import { authenticate } from "../../middlewares/auth.middleware";
@@ -53,7 +54,7 @@ router.get("/reports/compare", authorize("ADMIN", "OPERATOR"), async (req, res) 
 
 // 14: escalafon
 router.get("/seniority", authorize("ADMIN", "OPERATOR"), async (req, res) => { res.json(await seniority(req.user!)); });
-router.put("/promotion-rules", authorize("ADMIN"), async (req, res) => {
+router.put("/promotion-rules", authorize("ADMIN"), requireStepUp, async (req, res) => {
   const body = z.object({ reason: z.string().trim().min(10).max(1000), rules: z.array(z.object({ rank: z.string().trim().min(2).max(80), nextRank: z.string().trim().min(2).max(80), minYearsInRank: z.number().int().min(0).max(60), minYearsService: z.number().int().min(0).max(60), minApprovedCourses: z.number().int().min(0).max(200) }).strict()).min(1).max(20) }).strict().parse(req.body);
   res.json(await savePromotionRules(req.user!, body.rules, body.reason));
 });

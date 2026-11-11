@@ -1,3 +1,4 @@
+import { enableAutoStepUp } from "./step-up-test-helper";
 import "dotenv/config";
 import assert from "node:assert/strict";
 import {randomBytes,randomUUID} from "node:crypto";
@@ -16,6 +17,7 @@ async function main(){
   server=app.listen(0,"127.0.0.1");await new Promise<void>(r=>server!.once("listening",r));const address=server.address();assert(address&&typeof address!=="string");const base=`http://127.0.0.1:${address.port}/api`;
   let paths=0;async function call(path:string,status:number,token?:string,method="GET",body?:unknown){const response=await fetch(base+path,{method,headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{})},...(body?{body:JSON.stringify(body)}:{})});const data=await response.json();assert.equal(response.status,status,`${path}: ${JSON.stringify(data)}`);paths++;return data;}
   const password=randomUUID()+"!Aa7",passwordHash=await bcrypt.hash(password,10),users:Array<{id:string;username:string}>=[],tokens:string[]=[];
+  enableAutoStepUp(() => password);
   for(const [i,rank]of["Administrador","Sub oficial","Bombero","Guardia","Bombero","Oficial"].entries()){
    const user=await prisma.user.create({data:{username:"ranking_test_"+i,role:i===0?"ADMIN":"FIREFIGHTER",passwordHash,profile:{create:{rank,fullName:"Prueba ranking "+i,dni:"RANK-"+i,badge:"RANK-"+i}}}});users.push(user);tokens.push((await call("/auth/login",200,undefined,"POST",{username:user.username,password})).tokens.accessToken);
   }

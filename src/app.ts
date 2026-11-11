@@ -1,3 +1,6 @@
+import { z } from "zod";
+// Mensajes de validacion en español para toda la API.
+z.config(z.locales.es());
 import express from "express";
 import cors from "cors";
 import authRoutes from "./modules/auth/auth.routes";

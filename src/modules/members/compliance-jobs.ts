@@ -1,3 +1,4 @@
+import { warnTomorrowFireRisk } from "../station/fire-risk.service";
 import { detectSecurityAnomalies } from "../security/security.service";
 import { remindUpcomingEvents } from "../station/station.service";
 import { audienceMemberIds } from "../chat/chat-audience";
@@ -70,7 +71,7 @@ export function startComplianceJobs() {
   async function run() {
     if (running) return;
     running = true;
-    try { await recordShiftAbsences(); await remindUnacknowledgedMessages(); await remindUpcomingEvents(); await detectSecurityAnomalies(); }
+    try { await recordShiftAbsences(); await remindUnacknowledgedMessages(); await remindUpcomingEvents(); await detectSecurityAnomalies(); await warnTomorrowFireRisk(); }
     catch { console.error("No se pudieron completar los controles de guardias y acuses; se reintentará"); }
     finally { running = false; }
   }

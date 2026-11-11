@@ -1,3 +1,5 @@
+import bcrypt from "bcrypt";
+import { issueStepUpToken, STEP_UP_MINUTES } from "../../middlewares/step-up.middleware";
 import { Router } from "express";
 import { z } from "zod";
 import {guardFunctionAllowed} from "../../utils/firefighter-ranks";
@@ -39,6 +41,23 @@ router.post("/access-mode", authenticate, rateLimit({windowMs:60000,maxRequests:
     await tx.auditLog.create({data:{actorUserId:user.id,action:"SESSION_ACCESS_MODE_CHANGED",entityType:"AuthSession",entityId:req.user!.sessionId!,metadata:{mode}}});
     return mapSafeUser(user,mode==="GUARD"?"GUARD":undefined);
   }));
+});
+router.post("/confirm", authenticate, rateLimit({ windowMs: 60000, maxRequests: 12 }), async (req, res) => {
+  const { password } = z.object({ password: z.string().min(1).max(200) }).strict().parse(req.body);
+  const user = await prisma.user.findUnique({ where: { id: req.user!.userId }, select: { passwordHash: true } });
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    await prisma.auditLog.create({ data: { actorUserId: req.user!.userId, action: "AUTH_STEP_UP_FAILED", entityType: "AuthSession", entityId: req.user!.sessionId! } });
+    // Anti-robo de celular: 5 confirmaciones fallidas en 10 minutos cierran esta sesion.
+    const fails = await prisma.auditLog.count({ where: { action: "AUTH_STEP_UP_FAILED", entityId: req.user!.sessionId!, createdAt: { gt: new Date(Date.now() - 10 * 60_000) } } });
+    if (fails >= 5) {
+      await prisma.authSession.updateMany({ where: { id: req.user!.sessionId!, revokedAt: null }, data: { revokedAt: new Date() } });
+      await prisma.auditLog.create({ data: { actorUserId: req.user!.userId, action: "AUTH_STEP_UP_SESSION_CLOSED", entityType: "AuthSession", entityId: req.user!.sessionId! } });
+      return res.status(401).json({ message: "Demasiados intentos: por seguridad se cerró la sesión. Volvé a ingresar." });
+    }
+    return res.status(403).json({ message: "La contraseña no es correcta." });
+  }
+  await prisma.auditLog.create({ data: { actorUserId: req.user!.userId, action: "AUTH_STEP_UP_CONFIRMED", entityType: "AuthSession", entityId: req.user!.sessionId! } });
+  res.json({ token: issueStepUpToken(req.user!.userId, req.user!.sessionId!), expiresInMinutes: STEP_UP_MINUTES });
 });
 router.get("/sessions", authenticate, async (req, res) => {
   res.json(await listSessions(req.user!.userId, req.user!.sessionId!));

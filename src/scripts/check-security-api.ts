@@ -1,3 +1,4 @@
+import { enableAutoStepUp } from "./step-up-test-helper";
 import { purgeAuditLogs } from "../utils/audit-purge";
 import "dotenv/config";
 import assert from "node:assert/strict";
@@ -11,6 +12,7 @@ let initSocket: typeof import("../config/socket").initSocket;
 async function main() {
   const run = randomUUID().slice(0, 8), ids: string[] = [], sessionIds: string[] = [], applicationIds: string[] = [];
   const password = `${randomUUID()}!Aa7`;
+  enableAutoStepUp(() => password);
   const server = app.listen(0, "127.0.0.1");
   const io = initSocket(server);
   let checks = 0;

@@ -161,20 +161,24 @@ export async function guardComplianceReport(actor: Actor, month: string) {
 export async function yearComparison(year: number) {
   async function yearData(y: number) {
     const from = new Date(Date.UTC(y, 0, 1, 3)), to = new Date(Date.UTC(y + 1, 0, 1, 3));
-    const incidents = await prisma.incident.findMany({ where: { voidedAt: null, occurredAt: { gte: from, lt: to } }, select: { type: true, occurredAt: true, alert: { select: { createdAt: true } }, movements: { select: { departedAt: true, arrivedAt: true }, orderBy: { departedAt: "asc" }, take: 1 } } });
+    const incidents = await prisma.incident.findMany({ where: { voidedAt: null, occurredAt: { gte: from, lt: to } }, select: { type: true, occurredAt: true, agencies: { where: { voidedAt: null }, select: { agencyType: true } }, alert: { select: { createdAt: true } }, movements: { select: { departedAt: true, arrivedAt: true }, orderBy: { departedAt: "asc" }, take: 1 } } });
     const alerts = await prisma.alert.count({ where: { createdAt: { gte: from, lt: to } } });
     const months = Array.from({ length: 12 }, () => 0);
     const byType: Record<string, number> = {};
     const dispatch: number[] = [], travel: number[] = [];
+    // 62: intervenciones con otras instituciones y cuantas veces participo cada tipo.
+    const agencies: Record<string, number> = {}; let joint = 0;
     for (const inc of incidents) {
       months[Number(stationDate(inc.occurredAt).slice(5, 7)) - 1]++;
       byType[inc.type] = (byType[inc.type] ?? 0) + 1;
+      if (inc.agencies.length) joint++;
+      for (const t of new Set(inc.agencies.map((a) => a.agencyType))) agencies[t] = (agencies[t] ?? 0) + 1;
       const first = inc.movements[0];
       if (first && inc.alert) { const m = (first.departedAt.getTime() - inc.alert.createdAt.getTime()) / 60000; if (m >= 0 && m < 240) dispatch.push(m); }
       if (first?.arrivedAt) { const m = (first.arrivedAt.getTime() - first.departedAt.getTime()) / 60000; if (m >= 0 && m < 480) travel.push(m); }
     }
     const median = (v: number[]) => { if (!v.length) return null; const s = [...v].sort((a, b) => a - b), m = Math.floor(s.length / 2); return Math.round((s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2) * 10) / 10; };
-    return { year: y, incidents: incidents.length, alerts, months, byType, medianDispatchMinutes: median(dispatch), medianTravelMinutes: median(travel), samples: { dispatch: dispatch.length, travel: travel.length } };
+    return { year: y, incidents: incidents.length, alerts, months, byType, jointIncidents: joint, agencies, medianDispatchMinutes: median(dispatch), medianTravelMinutes: median(travel), samples: { dispatch: dispatch.length, travel: travel.length } };
   }
   const [current, previous] = await Promise.all([yearData(year), yearData(year - 1)]);
   // Para el año en curso se compara contra el mismo periodo del anterior, no contra el año completo.
@@ -282,6 +286,7 @@ export async function commandBoard() {
   const incidents = await prisma.incident.findMany({
     where: { status: "OPEN", voidedAt: null }, orderBy: { occurredAt: "desc" }, take: 20,
     select: { id: true, title: true, type: true, location: true, occurredAt: true, alert: { select: { priority: true, createdAt: true } },
+      agencies: { where: { voidedAt: null, leftAt: null }, select: { id: true, agencyType: true, name: true, unit: true } },
       movements: { where: { returnedAt: null }, orderBy: { departedAt: "asc" }, select: { id: true, departedAt: true, arrivedAt: true, asset: { select: { name: true } }, driver: { select: { username: true, profile: { select: { fullName: true } } } }, leader: { select: { username: true, profile: { select: { fullName: true } } } }, _count: { select: { crew: true } } } } },
   });
   return { generatedAt: new Date(), incidents: incidents.map((i) => ({ ...i, movements: i.movements.map((m) => ({ id: m.id, departedAt: m.departedAt, arrivedAt: m.arrivedAt, vehicle: m.asset.name, driver: nameOf(m.driver), leader: nameOf(m.leader), crew: m._count.crew })) })) };

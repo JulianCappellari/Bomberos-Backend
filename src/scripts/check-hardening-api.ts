@@ -67,7 +67,24 @@ async function main() {
     assert(overview.lockedAccounts.some((u: { userId: string }) => u.userId === target.id));
     assert(overview.events.some((e: { action: string; target: string }) => e.action === "AUTH_ACCOUNT_LOCKED" && e.target === "Prueba seguridad 3"));
     await call(`/security/users/${target.id}/unlock`, 403, firefighter, "POST", {});
-    await call(`/security/users/${target.id}/unlock`, 200, admin, "POST", {});
+    // Confirmacion de contrasena para acciones criticas.
+    const needs = await call(`/security/users/${target.id}/unlock`, 428, admin, "POST", {});
+    assert.equal(needs.code, "STEP_UP_REQUIRED");
+    await call("/auth/confirm", 403, admin, "POST", { password: "incorrecta" });
+    const step = await call("/auth/confirm", 200, admin, "POST", { password });
+    const forged = await raw(`/security/users/${target.id}/unlock`, admin, "POST", {}, { "X-Step-Up": step.token.slice(0, -4) + "AAAA" }); paths++;
+    assert.equal(forged.status, 428, "Un token alterado no sirve");
+    const stolen = await raw(`/security/users/${target.id}/unlock`, officer, "POST", {}, { "X-Step-Up": step.token }); paths++;
+    assert.equal(stolen.status, 428, "El token de otra sesión no sirve");
+    const ok = await raw(`/security/users/${target.id}/unlock`, admin, "POST", {}, { "X-Step-Up": step.token }); paths++;
+    assert.equal(ok.status, 200);
+    assert(await prisma.auditLog.findFirst({ where: { action: "AUTH_STEP_UP_CONFIRMED", actorUserId: users[0]!.id } }));
+    // Celular robado: 5 confirmaciones fallidas cierran la sesion.
+    for (let i = 0; i < 4; i++) await call("/auth/confirm", 403, firefighter, "POST", { password: "adivinando" + i });
+    await call("/auth/confirm", 401, firefighter, "POST", { password: "ultimo intento" });
+    await call("/members/notifications", 401, firefighter);
+    const firefighterAgain = (await login(users[2]!.username, password, 200)).tokens.accessToken;
+    const { enableAutoStepUp } = await import("./step-up-test-helper"); enableAutoStepUp(() => password);
     const unlocked = await login(target.username, password, 200);
     assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: target.id } })).failedLoginCount, 0);
 
@@ -113,7 +130,7 @@ async function main() {
     assert.equal(await prisma.auditLog.count({ where: { action: "ATTENDANCE_SHARED_DEVICE" } }), 1, "Un celular propio no se marca");
 
     // --- Alertas en rafaga ---
-    for (let i = 0; i < 3; i++) await call("/alerts", 201, firefighter, "POST", { type: "OTHER", priority: "LOW", location: "Plaza central " + i, description: "Prueba de ráfaga" });
+    for (let i = 0; i < 3; i++) await call("/alerts", 201, firefighterAgain, "POST", { type: "OTHER", priority: "LOW", location: "Plaza central " + i, description: "Prueba de ráfaga" });
     assert(await prisma.auditLog.findFirst({ where: { action: "ALERT_BURST_DETECTED", actorUserId: users[2]!.id } }), "La tercera alerta seguida se informa");
 
     // --- Anomalias: borrado masivo ---
@@ -142,7 +159,7 @@ async function main() {
     await call(`/station/reports/hours?scope=month&year=${year}&kind=guard`, 400, admin);
 
     // --- Riesgo de incendio: responde con datos o con un aviso claro si no hay conexion ---
-    const fire = await raw("/station/fire-risk", firefighter); paths++;
+    const fire = await raw("/station/fire-risk", firefighterAgain); paths++;
     assert([200, 503].includes(fire.status));
     if (fire.status === 200) { const data = await fire.json(); assert(data.levelIndex >= 0 && data.levelIndex <= 4); assert(typeof data.current.windFrom === "string"); }
 

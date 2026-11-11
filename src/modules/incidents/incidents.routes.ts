@@ -1,6 +1,8 @@
+import { requireStepUp } from "../../middlewares/step-up.middleware";
 import { Router } from "express";
 import missions from "./missions.routes";
 import sheet from "./incident-sheet";
+import agencies from "./incident-agencies";
 import {
   assignUsersToIncidentController,
   closeIncidentController,
@@ -22,6 +24,7 @@ const router = Router();
 router.use(authenticate);
 router.use("/logistics",missions);
 router.use("/:id/sheet",sheet);
+router.use("/:id/agencies",agencies);
 
 // Todos los logueados pueden ver incidentes
 router.get("/", getAllIncidentsController);
@@ -43,7 +46,7 @@ router.delete(
   deleteIncidentUpdateController,
 );
 // G15: los participantes u horarios de una intervencion cerrada se corrigen anulandola y rehaciendola.
-router.post("/:id/void-and-redo", authorize("ADMIN", "OPERATOR"), async (req, res) => {
+router.post("/:id/void-and-redo", authorize("ADMIN", "OPERATOR"), requireStepUp, async (req, res) => {
   const { reason } = z.object({ reason: z.string().trim().min(10).max(2000) }).strict().parse(req.body);
   res.status(201).json(await voidAndRedoIncident(String(req.params.id), reason, req.user!.userId));
 });

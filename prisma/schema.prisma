@@ -222,6 +222,7 @@ model User {
 
   chatMessages ChatMessage[] @relation("ChatMessageAuthor")
   stationEventsCreated StationEvent[] @relation("StationEventCreator")
+  incidentAgenciesCreated IncidentAgency[] @relation("IncidentAgencyCreator")
   stationEventRsvps StationEventRsvp[]
   documentReads DocumentRead[]
 
@@ -464,6 +465,7 @@ model Incident {
   replacement Incident? @relation("IncidentReplacement")
   sheet IncidentSheet?
   movements MissionMovement[]
+  agencies IncidentAgency[]
   id              String         @id @default(cuid())
   alertId         String?        @unique
   title           String         @db.VarChar(140)
@@ -904,6 +906,7 @@ model OperationalContact {
   deletedAt       DateTime?
 
   createdBy User @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+  incidentAgencies IncidentAgency[]
 
   @@index([deletedAt, category])
   @@index([isEmergency, name])
@@ -1762,4 +1765,30 @@ model PromotionRule {
   minApprovedCourses Int @default(0)
   updatedByUserId String?
   updatedAt DateTime @updatedAt
+}
+
+// 62: instituciones que participaron en una intervencion. No se borran: se anulan con motivo.
+model IncidentAgency {
+  id String @id @default(cuid())
+  incidentId String
+  agencyType String @db.VarChar(20)
+  name String @db.VarChar(160)
+  contactId String?
+  unit String @default("") @db.VarChar(80)
+  inCharge String @default("") @db.VarChar(120)
+  phone String? @db.VarChar(40)
+  arrivedAt DateTime?
+  leftAt DateTime?
+  notes String @default("") @db.VarChar(2000)
+  createdByUserId String
+  revision Int @default(1)
+  voidedAt DateTime?
+  voidReason String? @db.VarChar(1000)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  incident Incident @relation(fields: [incidentId], references: [id], onDelete: Restrict)
+  contact OperationalContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  createdBy User @relation("IncidentAgencyCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  @@index([incidentId])
+  @@index([agencyType])
 }

@@ -1,3 +1,4 @@
+import { enableAutoStepUp } from "./step-up-test-helper";
 import "dotenv/config";
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
@@ -15,6 +16,7 @@ isolatedApiTest(async()=>{
  try{
   async function call(path:string,status:number,token?:string,method="GET",body?:unknown){const res=await fetch(base+path,{method,headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{})},...(body?{body:JSON.stringify(body)}:{})});const data=await res.json();assert.equal(res.status,status,`${path}: ${JSON.stringify(data)}`);paths++;return data;}
   const password=randomUUID()+"!Aa7",passwordHash=await bcrypt.hash(password,10),users:Array<{id:string;username:string}>=[],tokens:string[]=[];
+  enableAutoStepUp(() => password);
   for(const[i,rank]of["Administrador","Oficial","Sub oficial","Bombero","Guardia","Sub oficial"].entries()){const user=await prisma.user.create({data:{username:"finance_test_"+i,role:"FIREFIGHTER",passwordHash,profile:{create:{rank,fullName:"Prueba finanzas "+i,dni:"FIN-"+i,badge:"FIN-"+i}}}});users.push(user);tokens.push((await call("/auth/login",200,undefined,"POST",{username:user.username,password})).tokens.accessToken);}
   const[admin,officer,sub,staff,guard]=tokens;
   await call(`/finance/access/${users[1]!.id}`,403,officer,"POST",{enabled:true,reason:"Un oficial no puede otorgarse acceso financiero"});

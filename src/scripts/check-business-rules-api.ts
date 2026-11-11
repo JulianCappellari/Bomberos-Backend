@@ -1,3 +1,4 @@
+import { enableAutoStepUp } from "./step-up-test-helper";
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -35,6 +36,7 @@ async function main() {
       const data = await response.json(); assert.equal(response.status, status, `${method} ${path}: ${JSON.stringify(data)}`); assert(!JSON.stringify(data).includes("passwordHash")); paths++; return data;
     }
     const password = randomUUID() + "!Aa9", passwordHash = await bcrypt.hash(password, 10), users: Array<{id:string;username:string}> = [], tokens: string[] = [];
+    enableAutoStepUp(() => password);
     for (const [i, rank] of ["Oficial", "Sub oficial", "Bombero", "Aspirante menor", "Guardia"].entries()) {
       const person = await prisma.user.create({ data: { username: `business_test_${i}`, passwordHash, role: "FIREFIGHTER", profile: { create: { fullName: `Prueba reglas ${i}`, rank, dni: `REGLAS-${i}`, badge: `R-${i}` } } } }); users.push(person);
       const login = await call("/auth/login", 200, undefined, "POST", { username: person.username, password }); tokens.push(login.tokens.accessToken);

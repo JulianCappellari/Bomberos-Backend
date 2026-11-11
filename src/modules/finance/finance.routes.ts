@@ -1,3 +1,4 @@
+import { requireStepUp } from "../../middlewares/step-up.middleware";
 import {Router} from "express";
 import {z} from "zod";
 import {prisma} from "../../config/prisma";
@@ -13,7 +14,7 @@ import { sanitizeTaskPhotos } from "../work/work-photos";
 const router=Router();router.use(authenticate);
 router.get("/access",async(req,res)=>res.json(await access(req.user!.userId,req.user!.role)));
 router.get("/chiefs",async(req,res)=>{if(!(await access(req.user!.userId,req.user!.role)).canDelegate)throw new OperationError(403,"Acceso reservado al administrador general");res.json(await prisma.user.findMany({where:{isActive:true,deletedAt:null,profile:{rank:{equals:"Oficial",mode:"insensitive"}}},select:{id:true,username:true,financeChief:true,profile:{select:{fullName:true}}}}));});
-router.post("/access/:userId",async(req,res)=>{
+router.post("/access/:userId",requireStepUp,async(req,res)=>{
  if(!(await access(req.user!.userId,req.user!.role)).canDelegate)throw new OperationError(403,"Solo el administrador general designa al jefe financiero");
  const {enabled,reason}=z.object({enabled:z.boolean(),reason:z.string().trim().min(10).max(1000)}).strict().parse(req.body),id=String(req.params.userId);
  res.json(await serializable(async tx=>{const u=await tx.user.findUnique({where:{id},include:{profile:true}});if(!u||!u.isActive||u.deletedAt||u.isPendingApproval||normalizeRank(u.profile?.rank)!=="oficial")throw new OperationError(400,"Seleccione un oficial activo");await tx.user.update({where:{id},data:{financeChief:enabled}});await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"FINANCE_CHIEF_CHANGED",entityType:"User",entityId:id,metadata:{before:u.financeChief,after:enabled,reason}}});return {message:"Permiso financiero actualizado"};}));
@@ -107,7 +108,7 @@ router.post("/water/:id/approve",async(req,res)=>{
   await tx.auditLog.create({data:{actorUserId:actor,action:"WATER_EARNINGS_APPROVED",entityType:"WaterTrip",entityId:id,metadata:{note:input.note,revision:input.revision,crew:row.crew.map(m=>({userId:m.userId,compensationCents:m.compensationCents})),chargeCents:row.chargeCents}}});return {message:"Compensaciones revisadas y deuda reconocida; no se transfirió dinero"};
  }));
 });
-router.post("/expenses/:id/payments",async(req,res)=>{
+router.post("/expenses/:id/payments",requireStepUp,async(req,res)=>{
  const id=String(req.params.id),data=z.object({operationKey:z.string().uuid(),revision,amountCents:cents,reference:z.string().trim().min(5).max(500)}).strict().parse(req.body);
  res.status(201).json(await serializable(async tx=>{
   const existing=await tx.expensePayment.findUnique({where:{operationKey:data.operationKey}});
@@ -124,7 +125,7 @@ router.post("/expenses/:id/payments",async(req,res)=>{
   await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"EXPENSE_PAYMENT_RECORDED",entityType:"ExpenseClaim",entityId:id,metadata:{paymentId:row.id,amountCents:data.amountCents,reference:data.reference}}});return {id:row.id,message:"Constancia registrada. No se transfirió dinero desde el sistema."};
  }));
 });
-router.post("/payments/:id/reverse",async(req,res)=>{
+router.post("/payments/:id/reverse",requireStepUp,async(req,res)=>{
  const id=String(req.params.id),{reason}=z.object({reason:z.string().trim().min(10).max(1000)}).strict().parse(req.body);
  res.json(await serializable(async tx=>{
   const old=await tx.expensePayment.findUnique({where:{id}});if(!old||old.reversedAt)throw new OperationError(409,"Pago inexistente o ya revertido");

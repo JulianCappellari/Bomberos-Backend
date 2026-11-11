@@ -1,3 +1,4 @@
+import { requireStepUp } from "../../middlewares/step-up.middleware";
 import {Router} from "express";
 import {z} from "zod";
 import {authenticate} from "../../middlewares/auth.middleware";
@@ -12,7 +13,7 @@ const router=Router();router.use(authenticate,authorize("ADMIN"));
 const month=z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).default(()=>stationDate().slice(0,7));
 router.get("/",async(req,res)=>res.json(await ranking(month.parse(req.query.month))));
 router.get("/templates",async(_req,res)=>res.json(await prisma.rankingTemplate.findMany({orderBy:{createdAt:"asc"}})));
-router.put("/policy",async(req,res)=>{
+router.put("/policy",requireStepUp,async(req,res)=>{
  const input=z.object({revision:z.number().int().min(0),config:policySchema,reason:z.string().trim().min(10).max(1000)}).strict().parse(req.body);
  res.json(await serializable(async tx=>{
   const old=await tx.rankingPolicy.findUnique({where:{id:"main"}});

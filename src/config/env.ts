@@ -1,3 +1,5 @@
+// Carga explicita de .env: no depender de que otro modulo (Prisma) lo haga antes por casualidad.
+import "dotenv/config";
 export const env = {
   port: Number(process.env.PORT || 4000),
   corsOrigins: (process.env.CORS_ORIGINS || "http://localhost:3000")

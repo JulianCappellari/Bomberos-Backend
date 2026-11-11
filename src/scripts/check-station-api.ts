@@ -1,3 +1,4 @@
+import { enableAutoStepUp } from "./step-up-test-helper";
 import { purgeAuditLogs } from "../utils/audit-purge";
 import "dotenv/config";
 import assert from "node:assert/strict";
@@ -30,6 +31,7 @@ async function main() {
       assert.equal(response.status, status, `${method} ${path}: ${JSON.stringify(data)}`); paths++; return data;
     }
     const password = randomUUID() + "!Aa7", passwordHash = await bcrypt.hash(password, 10);
+    enableAutoStepUp(() => password);
     const ranks = ["Administrador", "Oficial", "Sub oficial", "Bombero", "Bombero", "Guardia", "Bombero"];
     const users: Array<{ id: string }> = [], tokens: string[] = [];
     for (const [i, rank] of ranks.entries()) {
@@ -166,6 +168,28 @@ async function main() {
     assert.equal(locations[0].uses, 2, "Las direcciones se agrupan sin importar mayúsculas ni espacios");
     await call("/station/board", 403, bomberoC);
     assert(Array.isArray((await call("/station/board", 200, guard)).incidents));
+
+    // --- 62: instituciones en la intervencion ---
+    const joint = await prisma.incident.create({ data: { title: "Choque en ruta", type: "ACCIDENT", description: "Prueba", location: "Ruta 8 km 612", occurredAt: new Date(Date.now() - 3600000), createdByUserId: officerUser!.id } });
+    const agency = { agencyType: "POLICE", name: "Comisaría Sampacho", unit: "Patrullero 214", inCharge: "Cabo Pérez", phone: "0358 400000", arrivedAt: new Date(Date.now() - 1800000).toISOString(), notes: "Corte de tránsito" };
+    await call(`/incidents/${joint.id}/agencies`, 403, bomberoB, "POST", agency);
+    await call(`/incidents/${joint.id}/agencies`, 400, officer, "POST", { ...agency, arrivedAt: new Date(Date.now() + 3600000).toISOString() });
+    await call(`/incidents/${joint.id}/agencies`, 400, officer, "POST", { ...agency, leftAt: new Date(Date.now() - 2400000).toISOString() });
+    await call(`/incidents/${joint.id}/agencies`, 400, officer, "POST", { ...agency, agencyType: "ARMY" });
+    const added = await call(`/incidents/${joint.id}/agencies`, 201, officer, "POST", agency);
+    await call(`/incidents/${joint.id}/agencies`, 409, officer, "POST", { ...agency, name: "comisaría sampacho", unit: "patrullero 214" });
+    const listed = await call(`/incidents/${joint.id}/agencies`, 200, bomberoB);
+    assert.equal(listed.canEdit, false); assert.equal(listed.items.length, 1);
+    assert((await call("/station/board", 200, guard)).incidents.find((i: { id: string }) => i.id === joint.id).agencies.length === 1, "El tablero muestra quién sigue en el lugar");
+    await call(`/incidents/${joint.id}/agencies/${added.id}`, 200, officer, "PUT", { ...agency, leftAt: new Date().toISOString(), revision: 1 });
+    await call(`/incidents/${joint.id}/agencies/${added.id}`, 409, officer, "PUT", { ...agency, revision: 1 });
+    await call(`/incidents/${joint.id}/agencies/${added.id}/void`, 400, officer, "POST", { reason: "corto" });
+    await call(`/incidents/${joint.id}/agencies/${added.id}/void`, 200, officer, "POST", { reason: "Cargada en la intervención equivocada" });
+    await call(`/incidents/${joint.id}/agencies/${added.id}/void`, 409, officer, "POST", { reason: "Cargada en la intervención equivocada" });
+    assert.equal(await prisma.incidentAgency.count({ where: { id: added.id } }), 1, "Anular no borra");
+    for (const action of ["INCIDENT_AGENCY_ADDED", "INCIDENT_AGENCY_UPDATED", "INCIDENT_AGENCY_VOIDED"]) assert(await prisma.auditLog.findFirst({ where: { action, entityId: joint.id } }), action);
+    await call(`/incidents/${joint.id}/agencies`, 201, officer, "POST", { ...agency, unit: "Patrullero 300" });
+    assert.equal((await call(`/station/reports/compare?year=${new Date().getFullYear()}`, 200, officer)).current.agencies.POLICE, 1);
 
     console.log(`Cuartel: ${paths} caminos HTTP aprobados; agenda, refuerzos, bolsa de reemplazos, mensajes por grupo, guardias, comparativa, escalafón, biblioteca y tablero.`);
   } finally {
