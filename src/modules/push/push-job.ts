@@ -11,15 +11,16 @@ export async function queuePush(now = new Date()) {
     const alerts = await tx.memberNotification.findMany({ where: { pushQueuedAt: null, href: "/alerts", readAt: null, createdAt: { gte: new Date(now.getTime() - 15 * 60000), lte: now } }, take: 50, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
     const others = alerts.length < 50 ? await tx.memberNotification.findMany({ where: { pushQueuedAt: null, id: { notIn: alerts.map(row => row.id) }, createdAt: { gte: new Date(now.getTime() - 24 * 3600000), lte: now } }, take: 50 - alerts.length, orderBy: [{ createdAt: "asc" }, { id: "asc" }] }) : [];
     const notifications = [...alerts, ...others];
-    for (const notification of notifications) {
-      if (!notification.readAt && now.getTime() - notification.createdAt.getTime() < pushPolicy(notification.href).maxAgeMs) {
-        const subscriptions = await tx.pushSubscription.findMany({ where: { userId: notification.userId, createdAt: { lte: notification.createdAt }, session: { revokedAt: null, expiresAt: { gt: now } }, user: { isActive: true, isPendingApproval: false, deletedAt: null, mustChangePassword: false } }, select: { id: true } });
-        await tx.pushDelivery.createMany({ data: subscriptions.map(s => ({ subscriptionId: s.id, notificationId: notification.id })), skipDuplicates: true });
-      }
-      await tx.memberNotification.update({ where: { id: notification.id }, data: { pushQueuedAt: now } });
-    }
+    if (!notifications.length) return 0;
+    // Todo en lote (pocas consultas): con la base lejos del servidor, una consulta por aviso
+    // superaba el tiempo maximo de la transaccion y la cola quedaba trabada para siempre.
+    const eligible = notifications.filter(n => !n.readAt && now.getTime() - n.createdAt.getTime() < pushPolicy(n.href).maxAgeMs);
+    const subscriptions = eligible.length ? await tx.pushSubscription.findMany({ where: { userId: { in: [...new Set(eligible.map(n => n.userId))] }, session: { revokedAt: null, expiresAt: { gt: now } }, user: { isActive: true, isPendingApproval: false, deletedAt: null, mustChangePassword: false } }, select: { id: true, userId: true, createdAt: true } }) : [];
+    const deliveries = eligible.flatMap(n => subscriptions.filter(s => s.userId === n.userId && s.createdAt <= n.createdAt).map(s => ({ subscriptionId: s.id, notificationId: n.id })));
+    if (deliveries.length) await tx.pushDelivery.createMany({ data: deliveries, skipDuplicates: true });
+    await tx.memberNotification.updateMany({ where: { id: { in: notifications.map(n => n.id) }, pushQueuedAt: null }, data: { pushQueuedAt: now } });
     return notifications.length;
-  });
+  }, { timeout: 20000, maxWait: 10000 });
 }
 
 export async function deliverPush(sender: Sender = webpush.sendNotification, now = new Date()) {
@@ -79,7 +80,8 @@ export function startPushJob() {
   const tick = async () => {
     if (running) return; running = true;
     try { await queuePush(); await deliverPush(); }
-    catch { console.error("No se pudo procesar la cola de Web Push"); }
+    // Se registra el motivo (sin datos personales) para poder diagnosticar desde los logs del servidor.
+    catch (error) { console.error("No se pudo procesar la cola de Web Push:", error instanceof Error ? `${error.name}: ${error.message.slice(0, 300)}` : String(error).slice(0, 300)); }
     finally { running = false; }
   };
   void tick(); const timer = setInterval(() => { void tick(); }, 10000); timer.unref();
