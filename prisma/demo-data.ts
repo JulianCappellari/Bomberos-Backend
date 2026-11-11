@@ -39,7 +39,8 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
   const day = (offset: number) => scenarioDay(offset, reference);
   const passwordHash = await bcrypt.hash(password, 12);
 
-  return client.$transaction(
+  const transactionOptions = { isolationLevel: "Serializable" as const, maxWait: 30000, timeout: 600000 };
+  const base = await client.$transaction(
     async (tx) => {
       // -----------------------------------------------------------------------
       // 0. Safeguard: en producción o si se activa modo estricto
@@ -1330,13 +1331,42 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
         });
       }
 
-      const extended = await seedExtendedScenarios(tx, passwordHash, reference);
-      await seedCurrentRules(tx, passwordHash, reference);
-      const questionnaire = await seedQuestionnaireScenarios(tx);
-      await seedProfessionalScenarios(tx, reference);
-      await seedCompleteIncidentSheets(tx, reference);
-      if (options.resetPasswords) await resetDemoCredentials(tx, password);
+      return { rosterCount: roster.length, fleetCount: fleet.length };
+    },
+    transactionOptions,
+  );
 
+  // Each scenario family is independently atomic. This avoids holding one
+  // remote Neon transaction open across thousands of sequential statements.
+  const extended = await client.$transaction(
+    (tx) => seedExtendedScenarios(tx, passwordHash, reference),
+    transactionOptions,
+  );
+  await client.$transaction(
+    (tx) => seedCurrentRules(tx, passwordHash, reference),
+    transactionOptions,
+  );
+  const questionnaire = await client.$transaction(
+    (tx) => seedQuestionnaireScenarios(tx),
+    transactionOptions,
+  );
+  await client.$transaction(
+    (tx) => seedProfessionalScenarios(tx, reference),
+    transactionOptions,
+  );
+  await client.$transaction(
+    (tx) => seedCompleteIncidentSheets(tx, reference),
+    transactionOptions,
+  );
+  if (options.resetPasswords) {
+    await client.$transaction(
+      (tx) => resetDemoCredentials(tx, password),
+      transactionOptions,
+    );
+  }
+
+  return client.$transaction(
+    async (tx) => {
       // Auditoría final
       await tx.auditLog.upsert({
         where: { id: id("seed_audit") },
@@ -1349,8 +1379,8 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
           entityId: "bomberos_sampacho",
           metadata: {
             organization: "Bomberos Voluntarios Sampacho",
-            rosterCount: roster.length,
-            fleetCount: fleet.length,
+            rosterCount: base.rosterCount,
+            fleetCount: base.fleetCount,
             timestamp: new Date().toISOString(),
           },
         },
@@ -1375,8 +1405,6 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
         extended, questionnaire,
       };
     },
-    // Neon adds network latency to every statement. Keep the seed atomic, but
-    // allow enough time for the complete synthetic dataset to reach a remote DB.
-    { isolationLevel: "Serializable", maxWait: 30000, timeout: 600000 }
+    transactionOptions,
   );
 }
