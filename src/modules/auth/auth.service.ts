@@ -9,6 +9,31 @@ import { LoginResponse, SafeUser } from "./auth.types";
 import { effectiveAccessRole, guardFunctionAllowed } from "../../utils/firefighter-ranks";
 
 const dummyHash = bcrypt.hash("invalid-placeholder-never-used", 10);
+// Bloqueo por cuenta: tras 5 intentos fallidos seguidos la cuenta queda bloqueada 15 minutos, aunque los
+// intentos vengan de distintas IP. El mensaje al usuario es siempre el mismo (no revela si la cuenta existe).
+export const MAX_FAILED_LOGINS = 5;
+export const LOCK_MINUTES = 15;
+export const LOGIN_FAILED_MESSAGE = "Usuario o contraseña incorrectos. Tras 5 intentos fallidos la cuenta se bloquea 15 minutos.";
+const deviceLabel = (ua?: string | null) => {
+  if (!ua) return "dispositivo desconocido";
+  const os = /Android/i.test(ua) ? "Android" : /iPhone|iPad|iOS/i.test(ua) ? "iPhone/iPad" : /Windows/i.test(ua) ? "Windows" : /Mac OS/i.test(ua) ? "Mac" : /Linux/i.test(ua) ? "Linux" : "otro sistema";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "navegador";
+  return `${browser} en ${os}`;
+};
+async function registerFailedLogin(user: { id: string; failedLoginCount: number }, userAgent?: string) {
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.user.update({ where: { id: user.id }, data: { failedLoginCount: { increment: 1 } }, select: { failedLoginCount: true } });
+    await tx.auditLog.create({ data: { actorUserId: null, action: "AUTH_LOGIN_FAILED", entityType: "User", entityId: user.id, metadata: { attempt: updated.failedLoginCount, device: deviceLabel(userAgent) } } });
+    if (updated.failedLoginCount >= MAX_FAILED_LOGINS) {
+      const lockedUntil = new Date(Date.now() + LOCK_MINUTES * 60_000);
+      await tx.user.update({ where: { id: user.id }, data: { lockedUntil, failedLoginCount: 0 } });
+      await tx.auditLog.create({ data: { actorUserId: null, action: "AUTH_ACCOUNT_LOCKED", entityType: "User", entityId: user.id, metadata: { lockedUntil: lockedUntil.toISOString(), device: deviceLabel(userAgent) } } });
+      await tx.memberNotification.create({ data: { userId: user.id, title: "Tu cuenta se bloqueó por intentos fallidos", href: "/me?tab=security", body: `Hubo ${MAX_FAILED_LOGINS} intentos de ingreso con contraseña incorrecta. Si no fuiste vos, cambiá la contraseña y avisá a administración.` } });
+      const admins = await tx.user.findMany({ where: { isActive: true, deletedAt: null, OR: [{ role: "ADMIN" }, { profile: { rank: { in: ["Administrador", "Oficial"] } } }], id: { not: user.id } }, select: { id: true } });
+      if (admins.length) await tx.memberNotification.createMany({ data: admins.map((a) => ({ userId: a.id, title: "Cuenta bloqueada por intentos fallidos", href: "/security-center", body: `Se bloqueó una cuenta ${LOCK_MINUTES} minutos tras ${MAX_FAILED_LOGINS} intentos fallidos (${deviceLabel(userAgent)}).` })) });
+    }
+  });
+}
 export const hashRefreshToken = (token: string) => createHash("sha256").update(token).digest("hex");
 type ProfileUser = Prisma.UserGetPayload<{ include: { profile: true } }>;
 export function mapSafeUser(user: ProfileUser, sessionRole?: string): SafeUser {
@@ -24,13 +49,24 @@ export function mapSafeUser(user: ProfileUser, sessionRole?: string): SafeUser {
 export async function loginUser(username: string, password: string, userAgent?: string): Promise<LoginResponse> {
   const user = await prisma.user.findUnique({ where: { username }, include: { profile: true } });
   const matches = await bcrypt.compare(password, user?.passwordHash || await dummyHash);
-  if (!user || !matches || user.deletedAt || !user.isActive || user.isPendingApproval) throw new Error("Usuario o contraseña incorrectos");
+  // Cuenta bloqueada: ni siquiera la contrasena correcta entra hasta que venza el bloqueo.
+  if (user?.lockedUntil && user.lockedUntil > new Date()) {
+    await prisma.auditLog.create({ data: { actorUserId: null, action: "AUTH_LOGIN_WHILE_LOCKED", entityType: "User", entityId: user.id, metadata: { device: deviceLabel(userAgent), correctPassword: matches } } });
+    throw new Error(LOGIN_FAILED_MESSAGE);
+  }
+  if (user && !matches && !user.deletedAt) { await registerFailedLogin(user, userAgent); throw new Error(LOGIN_FAILED_MESSAGE); }
+  if (!user || !matches || user.deletedAt || !user.isActive || user.isPendingApproval) throw new Error(LOGIN_FAILED_MESSAGE);
   return serializable(async (tx) => {
     const current = await tx.user.findFirst({
       where: { id: user.id, passwordHash: user.passwordHash, deletedAt: null, isActive: true, isPendingApproval: false },
       include: { profile: true },
     });
-    if (!current) throw new Error("Usuario o contraseña incorrectos");
+    if (!current) throw new Error(LOGIN_FAILED_MESSAGE);
+    if (current.failedLoginCount || current.lockedUntil) await tx.user.update({ where: { id: current.id }, data: { failedLoginCount: 0, lockedUntil: null } });
+    // Ingreso desde un dispositivo que la cuenta no uso en 90 dias: se avisa a su titular.
+    const ua = userAgent?.slice(0, 200) || null;
+    const known = await tx.authSession.findFirst({ where: { userId: current.id, userAgent: ua, createdAt: { gt: new Date(Date.now() - 90 * 86_400_000) } }, select: { id: true } });
+    const hadSessions = await tx.authSession.findFirst({ where: { userId: current.id }, select: { id: true } });
     const sessionId = randomUUID();
     const payload = { userId: current.id, role: current.role, sessionId };
     const accessToken = signAccessToken(payload);
@@ -42,8 +78,12 @@ export async function loginUser(username: string, password: string, userAgent?: 
       },
     });
     await tx.auditLog.create({
-      data: { actorUserId: current.id, action: "AUTH_LOGIN", entityType: "AuthSession", entityId: sessionId },
+      data: { actorUserId: current.id, action: "AUTH_LOGIN", entityType: "AuthSession", entityId: sessionId, metadata: { device: deviceLabel(userAgent) } },
     });
+    if (hadSessions && !known) {
+      await tx.auditLog.create({ data: { actorUserId: current.id, action: "AUTH_NEW_DEVICE", entityType: "AuthSession", entityId: sessionId, metadata: { device: deviceLabel(userAgent) } } });
+      await tx.memberNotification.create({ data: { userId: current.id, title: "Nuevo inicio de sesión", href: "/me?tab=security", body: `Se ingresó a tu cuenta desde ${deviceLabel(userAgent)}. Si no fuiste vos, cerrá las otras sesiones y cambiá la contraseña.` } });
+    }
     return { user: mapSafeUser(current), tokens: { accessToken, refreshToken } };
   });
 }

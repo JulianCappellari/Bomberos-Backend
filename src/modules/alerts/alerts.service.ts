@@ -19,6 +19,8 @@ export async function createAlert(data: {
   createdByUserId: string;
 }) {
   return serializable(async tx => {
+  // Anti-bromas: 3 o mas alertas del mismo autor en 10 minutos se informan a jefatura (sin bloquear).
+  const burst = await tx.alert.count({ where: { createdByUserId: data.createdByUserId, createdAt: { gt: new Date(Date.now() - 10 * 60_000) } } });
   const alert = await tx.alert.create({
     data: {
       type: data.type,
@@ -68,6 +70,10 @@ export async function createAlert(data: {
   });
 
   await notifyAlert(tx, alert);
+  if (burst >= 2) {
+    await tx.auditLog.create({ data: { actorUserId: data.createdByUserId, action: "ALERT_BURST_DETECTED", entityType: "Alert", entityId: alert.id, metadata: { alertsInTenMinutes: burst + 1 } } });
+    await notifyCommand(tx, "Varias alertas seguidas de una misma persona", "/alerts", `Se emitieron ${burst + 1} alertas en 10 minutos desde la misma cuenta. Verificá que sean reales.`, data.createdByUserId);
+  }
   return alert;
   });
 }

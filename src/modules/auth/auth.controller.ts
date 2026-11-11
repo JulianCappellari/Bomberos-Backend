@@ -19,7 +19,7 @@ export async function loginController(req: Request, res: Response) {
     return res.status(200).json(result);
   } catch (error: any) {
     return res.status(401).json({
-      message: "Usuario o contraseña incorrectos",
+      message: "Usuario o contraseña incorrectos. Tras 5 intentos fallidos la cuenta se bloquea 15 minutos.",
     });
   }
 }

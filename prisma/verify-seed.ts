@@ -1,3 +1,4 @@
+import { purgeAuditLogs } from "../src/utils/audit-purge";
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -109,10 +110,10 @@ async function main() {
     assert(await client.auditLog.findUnique({ where: { id: automaticAbsence.id } }), "Se conserva la auditoria automatica de ausencias demo");
     const foreignAbsence = await client.auditLog.create({ data: { action: "SYSTEM_SHIFT_ABSENCE_RECORDED", entityType: "Shift", entityId: "demo_v2_day", metadata: { userId: "foreign_user" } } });
     await assert.rejects(() => seedDemo(client, password), /no exclusiva.*AuditLog/);
-    await client.auditLog.delete({ where: { id: foreignAbsence.id } });
+    await purgeAuditLogs(client, { id: foreignAbsence.id });
     const foreignAudit = await client.auditLog.create({ data: { action: "UNRELATED_REAL_OPERATION", entityType: "System", entityId: "not-demo" } });
     await assert.rejects(() => seedDemo(client, password), /no exclusiva/);
-    await client.auditLog.delete({ where: { id: foreignAudit.id } });
+    await purgeAuditLogs(client, { id: foreignAudit.id });
     execFileSync(process.execPath, [require.resolve("tsx/cli"), "prisma/verify-demo-accounts.ts"], { env: { ...process.env, DATABASE_URL: databaseUrl, SEED_PASSWORD: DEMO_PASSWORD }, stdio: "inherit" });
     const externalAsset = await client.asset.create({ data: { name: "Registro ajeno de prueba", assetType: "OTHER" } });
     await assert.rejects(() => seedDemo(client, password), /no exclusiva/);

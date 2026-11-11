@@ -1,3 +1,4 @@
+import { purgeAuditLogs } from "../utils/audit-purge";
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -133,7 +134,7 @@ async function main() {
     await prisma.airCompressor.deleteMany({ where: { id: { in: comps } } });
     await prisma.maintenanceJob.deleteMany({ where: { id: { in: jobs } } });
     await prisma.asset.deleteMany({ where: { id: { in: assets } } });
-    await prisma.auditLog.deleteMany({ where: { actorUserId: { in: users } } });
+    await purgeAuditLogs(prisma, { actorUserId: { in: users } });
     await prisma.user.deleteMany({ where: { id: { in: users } } });
     await prisma.$disconnect();
   }

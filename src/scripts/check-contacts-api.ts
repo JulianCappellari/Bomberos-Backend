@@ -68,6 +68,7 @@ async function main() {
     if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
     if (userIds.length) {
       await prisma.$transaction([
+        prisma.$executeRaw`SELECT set_config('bomberos.audit_purge', 'on', true)`,
         prisma.auditLog.deleteMany({ where: { actorUserId: { in: userIds } } }),
         prisma.operationalContact.deleteMany({ where: { createdByUserId: { in: userIds } } }),
         prisma.user.deleteMany({ where: { id: { in: userIds } } }),

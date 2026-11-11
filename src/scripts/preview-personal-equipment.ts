@@ -1,3 +1,4 @@
+import { purgeAuditLogs } from "../utils/audit-purge";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import bcrypt from "bcrypt";
@@ -94,7 +95,7 @@ async function main() {
     await prisma.personalEquipmentCheck.deleteMany({ where: { equipmentId: { in: items } } });
     await prisma.personalEquipment.deleteMany({ where: { id: { in: items } } });
     await prisma.asset.deleteMany({ where: { id: { in: assets } } });
-    await prisma.auditLog.deleteMany({ where: { actorUserId: { in: ids } } });
+    await purgeAuditLogs(prisma, { actorUserId: { in: ids } });
     await prisma.user.deleteMany({ where: { id: { in: ids } } });
     await prisma.$disconnect();
     console.log("Vista de prueba cerrada y datos temporales eliminados.");

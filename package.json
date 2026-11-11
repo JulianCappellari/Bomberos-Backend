@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn src/server.ts",
+    "dev": "ts-node-dev --respawn --files src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
@@ -23,6 +23,7 @@
     "test:ranking": "tsx src/scripts/check-ranking-api.ts",
     "test:finance": "tsx src/scripts/check-finance-api.ts",
     "test:station": "tsx src/scripts/check-station-api.ts",
+    "test:hardening": "tsx src/scripts/check-hardening-api.ts",
     "test:operations": "tsx src/scripts/check-operations-api.ts",
     "logic:check": "tsx src/scripts/logic-check.ts",
     "test": "tsx --test src/tests/*.test.ts"

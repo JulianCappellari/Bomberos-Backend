@@ -1,3 +1,4 @@
+import { purgeAuditLogs } from "../utils/audit-purge";
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -95,7 +96,7 @@ async function main() {
   } finally {
     await prisma.volunteerApplication.deleteMany({ where: { id: { in: applicationIds } } });
     sessionIds.push(...(await prisma.authSession.findMany({ where: { userId: { in: ids } }, select: { id: true } })).map((s) => s.id));
-    await prisma.auditLog.deleteMany({ where: { OR: [{ actorUserId: { in: ids } }, { entityId: { in: [...ids, ...sessionIds] } }] } });
+    await purgeAuditLogs(prisma, { OR: [{ actorUserId: { in: ids } }, { entityId: { in: [...ids, ...sessionIds] } }] });
     await prisma.user.deleteMany({ where: { id: { in: ids } } });
     await new Promise<void>((resolve) => io.close(() => resolve()));
     await prisma.$disconnect();

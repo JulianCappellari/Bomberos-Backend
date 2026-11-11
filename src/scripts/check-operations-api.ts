@@ -183,6 +183,7 @@ async function main() {
     const { flushRequestAudit } = await import("../middlewares/request-audit.middleware"); await flushRequestAudit();
     if (userIds.length) {
       await prisma.$transaction([
+        prisma.$executeRaw`SELECT set_config('bomberos.audit_purge', 'on', true)`,
         prisma.auditLog.deleteMany({ where: { actorUserId: { in: userIds } } }),
         prisma.memberNotification.deleteMany({ where: { userId: { in: userIds } } }),
         prisma.controlGroupMember.deleteMany({ where: { groupId: groupId || "__no_group__" } }),

@@ -1,3 +1,4 @@
+import { purgeAuditLogs } from "../utils/audit-purge";
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -74,7 +75,7 @@ async function main() {
     await call(`/station/incidents/${incident.id}/reinforcements`, 429, officer, "POST", { message: "Otra vez" });
     await call(`/station/incidents/${incident.id}/reinforcements`, 429, guard, "POST", { message: "Choferes", target: "DRIVERS" }); // misma ventana de 5 minutos
     await prisma.incident.update({ where: { id: incident.id }, data: { status: "CLOSED" } });
-    await prisma.auditLog.deleteMany({ where: { action: "INCIDENT_REINFORCEMENT_REQUESTED" } });
+    await purgeAuditLogs(prisma, { action: "INCIDENT_REINFORCEMENT_REQUESTED" });
     await call(`/station/incidents/${incident.id}/reinforcements`, 409, officer, "POST", { message: "Tarde" });
 
     // --- 16: bolsa de reemplazos ---

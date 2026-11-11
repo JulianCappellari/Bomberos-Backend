@@ -1,4 +1,4 @@
-import { gpsSuspicionReasons, recordGpsSuspicion } from "../../utils/gps-suspicion";
+import { gpsSuspicionReasons, recordGpsSuspicion, recordSharedDevice } from "../../utils/gps-suspicion";
 import { prisma } from "../../config/prisma";
 import { creditedServices } from "../incidents/credited-services";
 import { effectiveAccessRole, normalizeRank } from "../../utils/firefighter-ranks";
@@ -153,6 +153,8 @@ export async function scanAttendanceQr(data: {
     // T09: una ubicacion con senales de falsificacion se marca y audita, sin bloquear el ingreso.
     const lastFix = await prisma.attendance.findFirst({ where: { userId: data.userId, id: { not: attendance.id } }, orderBy: { createdAt: "desc" }, select: { checkInLatitude: true, checkInLongitude: true } });
     await recordGpsSuspicion(prisma, data.userId, attendance.id, "Ingreso por QR", gpsSuspicionReasons(data, lastFix ? { latitude: lastFix.checkInLatitude, longitude: lastFix.checkInLongitude } : null));
+    // Anti-fraude: el mismo celular ya ficho a otra persona en las ultimas 12 horas (posible fichaje por otro).
+    await recordSharedDevice(prisma, data.userId, attendance.id, data.deviceFingerprint);
 
     await prisma.attendanceRecord.create({
       data: {
