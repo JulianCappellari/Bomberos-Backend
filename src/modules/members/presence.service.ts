@@ -97,7 +97,7 @@ export async function remindDuePresence(now = new Date()) {
       const { dueAt } = await effectivePresenceDue(tx, row.userId, row);
       // Solo vencimientos recientes: no se avisa de algo que vencio hace horas (ya se cerro o se cierra solo).
       if (!dueAt || dueAt > now || +now - +dueAt > 20 * 60000) return false;
-      const result = await tx.memberNotification.createMany({ data: [{ userId: row.userId, dedupeKey: `presence:${row.id}:${dueAt.toISOString()}`, title: `¿Seguís en ${row.station.name}?`, href: "/dashboard", body: row.station.requiresLocation ? "Confirmá tu presencia con la ubicación. Si no confirmás, la permanencia se cierra y no suma horas." : "Tocá para confirmar que seguís en la base. Si no confirmás, la permanencia se cierra y no suma horas." }], skipDuplicates: true });
+      const result = await tx.memberNotification.createMany({ data: [{ userId: row.userId, dedupeKey: `presence:${row.id}:${dueAt.toISOString()}`, title: `¿Seguís en ${row.station.name}?`, href: "/dashboard", body: row.station.requiresLocation ? "Confirmá tu presencia con la ubicación en los próximos 30 minutos. Si no, la permanencia se cierra y se acredita solo hasta tu última presencia verificada." : "Tocá para confirmar que seguís en la base en los próximos 30 minutos. Si no, la permanencia se cierra y se acredita solo hasta tu última presencia verificada." }], skipDuplicates: true });
       return result.count > 0;
     }, { isolationLevel: "RepeatableRead" });
     if (created) sent++;

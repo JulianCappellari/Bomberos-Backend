@@ -4,7 +4,7 @@ import { lockRow } from "../../utils/database-schema";
 import { isCommandRank, effectiveAccessRole } from "../../utils/firefighter-ranks";
 import { OperationError } from "../operations/operations.schemas";
 import { serializable } from "../../utils/transaction";
-import { assertCanSendTo, audienceMemberIds, visibleAudiences, type ChatAudience } from "./chat-audience";
+import { assertCanSendTo, audienceLabels, audienceMemberIds, visibleAudiences, type ChatAudience } from "./chat-audience";
 
 const VOTER_SELECT = { id: true, username: true, profile: { select: { fullName: true } } } as const;
 const MESSAGE_INCLUDE = {
@@ -128,10 +128,19 @@ export async function createChatMessage(data: {
       },
     },
   });
-  // Un mensaje a un grupo se avisa a sus integrantes; los generales se ven en Comunicaciones.
-  if (audience !== "ALL") {
-    const members = (await audienceMemberIds(prisma, audience)).filter((id) => id !== data.authorUserId);
-    if (members.length) await prisma.memberNotification.createMany({ data: members.map((userId) => ({ userId, title: data.poll ? "Nueva encuesta para tu grupo" : "Nuevo mensaje para tu grupo", href: "/chat", body: (data.body || (photos.length ? "Foto" : "Link")).slice(0, 300) })) });
+  // Toda comunicacion nueva (general o de grupo) llega como notificacion al celular de sus destinatarios.
+  const members = (await audienceMemberIds(prisma, audience)).filter((id) => id !== data.authorUserId);
+  if (members.length) {
+    const author = await prisma.user.findUnique({ where: { id: data.authorUserId }, select: { username: true, profile: { select: { fullName: true, rank: true } } } });
+    const who = author?.profile?.fullName || author?.username || "Comunicaciones";
+    const where = audience === "ALL" ? "" : ` · ${audienceLabels[audience]}`;
+    const extra = [photos.length ? (photos.length === 1 ? "1 foto" : `${photos.length} fotos`) : "", links.length ? (links.length === 1 ? "1 link" : `${links.length} links`) : ""].filter(Boolean).join(" · ");
+    const text = data.body?.trim() || (data.poll ? "Votá en la encuesta" : extra || "Mensaje nuevo");
+    await prisma.memberNotification.createMany({ data: members.map((userId) => ({
+      userId, dedupeKey: `chat:${message.id}:${userId}`.slice(0, 200), href: "/chat",
+      title: `${data.poll ? "Encuesta" : "Mensaje"} de ${who}${where}`.slice(0, 160),
+      body: `${text}${data.body?.trim() && extra ? ` (${extra})` : ""}`.slice(0, 300),
+    })), skipDuplicates: true });
   }
 
   return message;

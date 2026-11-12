@@ -108,9 +108,15 @@ async function main() {
     assert((await call("/chat/messages", 200, sub)).some((m: { id: string }) => m.id === toCommand.id));
     await call(`/members/messages/${toCommand.id}/read`, 403, bomberoA);
     await call(`/members/messages/${toCommand.id}/read`, 200, sub);
-    assert(await prisma.memberNotification.findFirst({ where: { userId: users[2]!.id, title: "Nuevo mensaje para tu grupo" } }));
+    const groupNote = await prisma.memberNotification.findFirstOrThrow({ where: { userId: users[2]!.id, dedupeKey: `chat:${toCommand.id}:${users[2]!.id}` } });
+    assert.match(groupNote.title, /Mensaje de .* · Jefatura/); assert.equal(groupNote.body, "Reunión de jefatura");
     const general = await call("/chat/messages", 201, bomberoA, "POST", { body: "Aviso general" });
     assert.equal(general.audience, "ALL");
+    // Los mensajes generales tambien llegan al celular de todo el personal (menos a quien lo escribe).
+    const generalNotes = await prisma.memberNotification.findMany({ where: { dedupeKey: { startsWith: `chat:${general.id}:` } } });
+    assert(generalNotes.length >= 3, "Se avisa a todo el personal");
+    assert(generalNotes.every((n) => n.body === "Aviso general" && n.href === "/chat"));
+    assert(!generalNotes.some((n) => n.userId === users[3]!.id), "Quien lo escribe no recibe su propio aviso");
 
     // --- Encuestas en comunicaciones ---
     await call("/chat/messages", 400, bomberoA, "POST", { body: "¿Una sola?", poll: { options: ["Sí"] } });
