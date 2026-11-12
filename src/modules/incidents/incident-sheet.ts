@@ -24,7 +24,8 @@ const form = z.object({
 export async function incidentSheetContext(tx:Prisma.TransactionClient,id:string,until:Date){
   const incident=await tx.incident.findUnique({where:{id},select:{id:true,requestYear:true,requestNumber:true,title:true,type:true,description:true,location:true,occurredAt:true,closedAt:true,status:true,voidedAt:true,voidReason:true,replacesIncidentId:true,
     alert:{select:{id:true,createdAt:true,contactPhone:true,createdBy:{select:{username:true,profile:{select:{fullName:true}}}},originNotice:{select:{source:true,phone:true,receivedAt:true}},responses:{where:{response:"GOING"},select:{id:true,userId:true,attendanceOutcome:true}}}},
-    movements:{orderBy:{departedAt:"asc"},select:{id:true,asset:{select:{name:true,status:true,vehicle:{select:{unitNumber:true}}}},driverUserId:true,leaderUserId:true,driver:{select:PUBLIC_USER_SELECT},leader:{select:PUBLIC_USER_SELECT},departedAt:true,arrivedAt:true,returnedAt:true,returnWithoutArrivalReason:true,dispatchExceptionReason:true,departure:{select:{voidedAt:true}},crew:{select:{userId:true,user:{select:PUBLIC_USER_SELECT}}}}}}});
+    movements:{orderBy:{departedAt:"asc"},select:{id:true,assetId:true,asset:{select:{name:true,status:true,vehicle:{select:{unitNumber:true}}}},driverUserId:true,leaderUserId:true,driver:{select:PUBLIC_USER_SELECT},leader:{select:PUBLIC_USER_SELECT},departedAt:true,arrivedAt:true,returnedAt:true,returnWithoutArrivalReason:true,dispatchExceptionReason:true,departure:{select:{voidedAt:true}},crew:{select:{userId:true,user:{select:PUBLIC_USER_SELECT}}}}},
+    agencies:{where:{voidedAt:null},orderBy:{createdAt:"asc"},select:{agencyType:true,name:true,unit:true,inCharge:true}}}});
   if(!incident)throw new OperationError(404,"Intervención no encontrada");
   if(incident.closedAt && incident.closedAt < until) until=incident.closedAt;
   const people=await tx.attendance.findMany({where:{checkInQrId:{not:null},checkInAt:{lt:until},checkInTrust:{not:"REJECTED"},OR:[{checkOutAt:{gt:incident.occurredAt}},{status:"OPEN"}]},select:{userId:true,checkInAt:true,checkOutAt:true,user:{select:{username:true,profile:{select:{fullName:true}}}}}});
@@ -51,10 +52,11 @@ export async function incidentSheetContext(tx:Prisma.TransactionClient,id:string
     const users=await tx.user.findMany({where:{id:{in:going},isActive:true,isPendingApproval:false,deletedAt:null},select:{id:true,username:true,profile:{select:{fullName:true}}}});
     for(const u of users)if(!deployed.has(u.id))base.set(u.id,u.profile?.fullName||u.username);
   }
-  // Salidas de cada candidato en esta intervencion: para mostrar "en base de … a …, luego salio en …".
-  const departures=new Map<string,Array<{unit:string;departedAt:Date;returnedAt:Date|null}>>();
-  for(const m of incident.movements)for(const c of m.crew)departures.set(c.userId,[...(departures.get(c.userId)||[]),{unit:m.asset.vehicle?.unitNumber||m.asset.name,departedAt:m.departedAt,returnedAt:m.returnedAt}]);
-  return {incident,baseCandidates:[...base].map(([id,name])=>({id,name,segments:segments.get(id)||[],respondedOnly:!segments.has(id),departures:departures.get(id)||[]}))};
+  // Personal actuante (integra una salida de esta intervencion) no figura en base. Si se corrige la dotacion
+  // y deja de integrarla, vuelve a aparecer solo.
+  const acting=new Set(incident.movements.filter(m=>!m.departure?.voidedAt).flatMap(m=>m.crew.map(c=>c.userId)));
+  for(const id of acting)base.delete(id);
+  return {incident,baseCandidates:[...base].map(([id,name])=>({id,name,segments:segments.get(id)||[],respondedOnly:!segments.has(id)}))};
 }
 export async function finalizeSheet(tx:Prisma.TransactionClient,id:string,now:Date,actor:string){
   const data=await incidentSheetContext(tx,id,now);

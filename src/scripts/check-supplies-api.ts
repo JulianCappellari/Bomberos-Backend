@@ -209,6 +209,32 @@ async function main() {
     assert(lateRow.returnedAt && lateRow.departureId, "Salida completa cargada después del regreso");
     assert(await prisma.auditLog.findFirst({ where: { entityId: late.id, action: "MISSION_LOADED_LATE" } }));
 
+    // --- Inicio: fallas del móvil para quien salió, hasta que vuelva al cuartel ---
+    await prisma.maintenanceJob.create({ data: { assetId: engine.id, title: "Sirena con falso contacto", description: "Funciona de a ratos; usar bocina", blocksOperation: false, createdByUserId: users[1]!.id } });
+    await prisma.complianceRecord.create({ data: { subjectType: "ASSET", assetId: engine.id, category: "VTV", title: "VTV 2026", expiresAt: new Date(Date.now() - 2 * 86_400_000), createdByUserId: users[1]!.id } });
+    assert.equal((await call("/incidents/logistics/briefing", 200, bombero)).length, 0, "Sin salida activa no muestra nada");
+    const live = await call("/incidents/logistics", 201, officer, "POST", { ...lateBody, dispatchExceptionReason: "Sale con la sirena fallando: se usa bocina" });
+    const briefing = await call("/incidents/logistics/briefing", 200, bombero);
+    assert.equal(briefing.length, 1); assert.equal(briefing[0].vehicle, "5"); assert.equal(briefing[0].role, "Conductor");
+    assert.equal(briefing[0].notes[0].level, "critical", "Lo vencido va primero"); assert.match(briefing[0].notes[0].text, /VTV vencido/);
+    assert(briefing[0].notes.some((n: { text: string }) => n.text === "Sirena con falso contacto"));
+    assert(briefing[0].notes.some((n: { text: string; detail?: string }) => n.text === "Salió de forma excepcional" && n.detail?.includes("bocina")));
+    assert.equal((await call("/incidents/logistics/briefing", 200, keeper)).length, 0, "Quien no salió no ve el aviso");
+    // --- Corregir la dotación: agregar y quitar personas; el conductor debe estar habilitado ---
+    await call(`/incidents/logistics/${live.id}/crew`, 403, officer, "PATCH", { userIds: [bomberoUser!.id, keeperUser!.id], driverUserId: keeperUser!.id, leaderUserId: bomberoUser!.id, reason: "Cambio de conductor" });
+    await call(`/incidents/logistics/${live.id}/crew`, 400, officer, "PATCH", { userIds: [bomberoUser!.id], driverUserId: bomberoUser!.id, leaderUserId: bomberoUser!.id });
+    await call(`/incidents/logistics/${live.id}/crew`, 200, officer, "PATCH", { userIds: [bomberoUser!.id, keeperUser!.id], driverUserId: bomberoUser!.id, leaderUserId: keeperUser!.id, reason: "Faltaba cargar a una integrante" });
+    assert.equal((await call("/incidents/logistics/briefing", 200, keeper)).length, 1, "Al agregarla ve el aviso del móvil");
+    await call(`/incidents/logistics/${live.id}/crew`, 200, officer, "PATCH", { userIds: [bomberoUser!.id], driverUserId: bomberoUser!.id, leaderUserId: bomberoUser!.id, reason: "No había salido, quedó en el cuartel" });
+    assert.equal(await prisma.missionCrew.count({ where: { movementId: live.id } }), 1);
+    assert(await prisma.auditLog.findFirst({ where: { entityId: live.id, action: "MISSION_CREW_CORRECTED" } }));
+    await call(`/incidents/logistics/${live.id}/arrive`, 200, officer, "POST", {});
+    await call(`/incidents/logistics/${live.id}/return`, 200, officer, "POST", {});
+    assert.equal((await call("/incidents/logistics/briefing", 200, bombero)).length, 0, "Desaparece cuando el móvil vuelve");
+    // Personal actuante no se ofrece como personal en base.
+    const thirdSheet = await call(`/incidents/${third.id}/sheet`, 200, officer);
+    assert(!thirdSheet.context.baseCandidates.some((p: { id: string }) => p.id === bomberoUser!.id), "Quien salió no figura para la base");
+
     // La guardia de turno edita la planilla sin fichar con QR.
     assert.equal((await call(`/incidents/${second.id}/sheet`, 200, guard)).canWrite, true);
 

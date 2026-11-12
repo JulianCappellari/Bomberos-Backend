@@ -14,6 +14,7 @@ import { lockRow } from "../../utils/database-schema";
 import { activePeople } from "../work/work.service";
 import { notify, notifyCommand } from "../members/notifications.service";
 import { driverLicenseCheck, licensedDriverPairs } from "./driver-eligibility";
+import { missionBriefing } from "./mission-briefing";
 import { normalizeLicenseClass, VEHICLE_LICENSE_CATEGORIES, VehicleLicenseCategory } from "../../utils/license-classes";
 const router = Router();
 // Orden logico y sin horas futuras. La salida puede ser hasta 1 h anterior al aviso (la alerta se carga a veces despues).
@@ -24,6 +25,15 @@ function assertMovementTimes(t:{departedAt:Date;arrivedAt:Date|null;returnedAt:D
   if(t.arrivedAt&&t.arrivedAt<t.departedAt)throw new OperationError(400,"La llegada no puede ser anterior a la salida");
   if(t.returnedAt&&t.returnedAt<=t.departedAt)throw new OperationError(400,"El regreso debe ser posterior a la salida");
   if(t.returnedAt&&t.arrivedAt&&t.arrivedAt>t.returnedAt)throw new OperationError(400,"La llegada no puede ser posterior al regreso");
+}
+// Quien pasa a integrar una salida deja de figurar como personal en base en la planilla abierta.
+async function dropFromBase(tx:Prisma.TransactionClient,incidentId:string,userIds:string[],actorUserId:string){
+  const sheet=await tx.incidentSheet.findUnique({where:{incidentId},select:{baseUserIds:true,finalizedAt:true}});
+  if(!sheet||sheet.finalizedAt)return;
+  const removed=sheet.baseUserIds.filter(id=>userIds.includes(id));
+  if(!removed.length)return;
+  await tx.incidentSheet.update({where:{incidentId},data:{baseUserIds:sheet.baseUserIds.filter(id=>!userIds.includes(id)),revision:{increment:1}}});
+  await tx.auditLog.create({data:{actorUserId,action:"INCIDENT_SHEET_BASE_ADJUSTED",entityType:"Incident",entityId:incidentId,metadata:{removedFromBase:removed,reason:"Pasaron a integrar una salida (personal actuante)"}}});
 }
 async function assertNoOverlap(tx:Prisma.TransactionClient,v:{assetId:string;userIds:string[];from:Date;to:Date|null;exceptId?:string}){
   const clash=await tx.missionMovement.findFirst({where:{...(v.exceptId?{id:{not:v.exceptId}}:{}),incident:{voidedAt:null},...(v.to?{departedAt:{lt:v.to}}:{}),OR:[{returnedAt:null},{returnedAt:{gt:v.from}}],AND:[{OR:[{assetId:v.assetId},{crew:{some:{userId:{in:v.userIds}}}}]}]},select:{asset:{select:{name:true}}}});
@@ -67,6 +77,8 @@ router.put("/authorizations", authorize("ADMIN","OPERATOR"), async (req,res) => 
     return row;
   }));
 });
+// Inicio: fallas y novedades del movil en que salio la persona (mientras no vuelva al cuartel).
+router.get("/briefing", async (req,res)=>{ res.json(await missionBriefing(req.user!.userId)); });
 router.get("/", async (req,res)=>{
   const {incidentId}=z.object({incidentId:id}).parse(req.query);
   const rows=await prisma.$transaction(async tx=>{
@@ -135,12 +147,14 @@ router.post("/", async(req,res)=>{
       await tx.missionMovement.update({where:{id:row.id},data:{returnedAt:times.returnedAt,departureId:departure.id,returnWithoutArrivalReason:times.arrivedAt?null:""}});
       await tx.incidentVehicle.upsert({where:{incidentId_assetId:{incidentId:input.incidentId,assetId:input.assetId}},create:{incidentId:input.incidentId,assetId:input.assetId},update:{}});
       for(const userId of input.userIds)await tx.incidentAssignment.upsert({where:{incidentId_userId:{incidentId:input.incidentId,userId}},create:{incidentId:input.incidentId,userId},update:{}});
+      await dropFromBase(tx,input.incidentId,input.userIds,req.user!.userId);
       await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:incident.replacesIncidentId?"MISSION_RELOADED_FOR_REDO":"MISSION_LOADED_LATE",entityType:"MissionMovement",entityId:row.id,metadata:{...input,driverProof}}});
       return row;
     }
     await tx.attendance.updateMany({where:{userId:{in:input.userIds},status:"OPEN",promptShownAt:{not:null}},data:{promptShownAt:null,promptDueAt:null}});
     await tx.incidentVehicle.upsert({where:{incidentId_assetId:{incidentId:input.incidentId,assetId:input.assetId}},create:{incidentId:input.incidentId,assetId:input.assetId},update:{}});
     for(const userId of input.userIds)await tx.incidentAssignment.upsert({where:{incidentId_userId:{incidentId:input.incidentId,userId}},create:{incidentId:input.incidentId,userId},update:{}});
+    await dropFromBase(tx,input.incidentId,input.userIds,req.user!.userId);
     await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:requiresException?"MISSION_DEPARTED_EXCEPTION":"MISSION_DEPARTED",entityType:"MissionMovement",entityId:row.id,metadata:{...input,driverProof,manualTimes:manual,recordedAt:new Date().toISOString()}}});
     await notify(tx,input.userIds,"Salida a intervencion registrada","/incidents","La verificacion de presencia queda suspendida hasta el retorno registrado.");
     if(requiresException&&input.dispatchExceptionReason){
@@ -159,6 +173,44 @@ router.post("/", async(req,res)=>{
     }).catch(()=>undefined);
     throw error;
   }
+});
+router.patch("/:id/crew",async(req,res)=>{
+  const input=z.object({userIds:z.array(id).min(1).max(40),driverUserId:id,leaderUserId:id,reason:z.string().trim().min(5,"Indicá el motivo de la corrección").max(500)}).strict()
+    .refine(v=>new Set(v.userIds).size===v.userIds.length&&v.userIds.includes(v.driverUserId)&&v.userIds.includes(v.leaderUserId),"Conductor y encargado deben integrar la dotación, sin repetidos").parse(req.body);
+  res.json(await serializable(async tx=>{
+    await requirePresentOrCommand(tx,req);
+    const row=await tx.missionMovement.findUnique({where:{id:String(req.params.id)},include:{crew:true,incident:true}});
+    if(!row)throw new OperationError(404,"Salida no encontrada");
+    await lockRow(tx,"Incident",row.incidentId);
+    if(row.incident.status!=="OPEN")throw new OperationError(409,"La intervención está cerrada: la dotación se corrige con una enmienda de jefatura");
+    await activePeople(tx,input.userIds);
+    const before=row.crew.map(c=>c.userId), added=input.userIds.filter(u=>!before.includes(u)), removed=before.filter(u=>!input.userIds.includes(u));
+    if(added.length)await assertNoOverlap(tx,{assetId:"-",userIds:added,from:row.departedAt,to:row.returnedAt,exceptId:row.id});
+    if(input.driverUserId!==row.driverUserId){
+      const today=new Date(stationDate());
+      const byLicense=await driverLicenseCheck(tx,row.assetId,input.driverUserId,today);
+      if(byLicense.configured&&!byLicense.eligible)throw new OperationError(403,`El conductor no tiene licencia vigente para este móvil: le falta ${byLicense.missing.join(" y ")}`);
+      if(!byLicense.configured){
+        const permit=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:row.assetId,userId:input.driverUserId}}});
+        if(!permit||permit.validUntil<today)throw new OperationError(403,"El conductor necesita habilitación de jefatura para este móvil");
+      }
+    }
+    if(removed.length)await tx.missionCrew.deleteMany({where:{movementId:row.id,userId:{in:removed}}});
+    if(added.length)await tx.missionCrew.createMany({data:added.map(userId=>({movementId:row.id,userId}))});
+    await tx.missionMovement.update({where:{id:row.id},data:{driverUserId:input.driverUserId,leaderUserId:input.leaderUserId}});
+    if(row.departureId){
+      if(removed.length)await tx.departureMember.deleteMany({where:{departureId:row.departureId,userId:{in:removed}}});
+      if(added.length)await tx.departureMember.createMany({data:added.map(userId=>({departureId:row.departureId!,userId}))});
+      await tx.departureMember.updateMany({where:{departureId:row.departureId},data:{isLeader:false}});
+      await tx.departureMember.updateMany({where:{departureId:row.departureId,userId:input.leaderUserId},data:{isLeader:true}});
+    }
+    for(const userId of added)await tx.incidentAssignment.upsert({where:{incidentId_userId:{incidentId:row.incidentId,userId}},create:{incidentId:row.incidentId,userId},update:{}});
+    // Quien deja de integrar la dotacion (y no esta en otra salida de la intervencion) deja de figurar asignado.
+    for(const userId of removed)if(!await tx.missionCrew.findFirst({where:{userId,movement:{incidentId:row.incidentId}}}))await tx.incidentAssignment.deleteMany({where:{incidentId:row.incidentId,userId}});
+    await dropFromBase(tx,row.incidentId,added,req.user!.userId);
+    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"MISSION_CREW_CORRECTED",entityType:"MissionMovement",entityId:row.id,metadata:{reason:input.reason,before:{crew:before,driverUserId:row.driverUserId,leaderUserId:row.leaderUserId},after:{crew:input.userIds,driverUserId:input.driverUserId,leaderUserId:input.leaderUserId}}}});
+    return {id:row.id,added,removed};
+  }));
 });
 router.patch("/:id/times",async(req,res)=>{
   const input=z.object({departedAt:z.string().datetime({offset:true}).optional(),arrivedAt:z.string().datetime({offset:true}).nullable().optional(),returnedAt:z.string().datetime({offset:true}).optional(),reason:z.string().trim().min(5,"Indicá el motivo de la corrección").max(500)}).strict().parse(req.body);
