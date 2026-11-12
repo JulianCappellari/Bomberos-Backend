@@ -15,6 +15,7 @@ import { presenceEventStream } from "./presence-events";
 import { rateLimit } from "../../middlewares/rate-limit.middleware";
 import { z } from "zod";
 import { closeAttendance, decideCorrection, listCorrections, requestOpenAttendance } from "./close-attendance.service";
+import { closeRemotely, remoteClosePreview, remoteCloseSchema } from "./remote-close.service";
 
 
 const router = Router();
@@ -54,6 +55,9 @@ router.post(
   createAttendanceQrChallengeController,
 );
 router.post("/scan", authenticate, scanAttendanceQrController);
+// Cerrar la permanencia sin QR (ya se fue): se acredita solo hasta la ultima presencia verificada.
+router.get("/me/close-remote", authenticate, async (req, res) => { res.json(await remoteClosePreview(req.user!.userId)); });
+router.post("/me/close-remote", authenticate, rateLimit({ windowMs: 60000, maxRequests: 12 }), async (req, res) => { res.json(await closeRemotely(req.user!, remoteCloseSchema.parse(req.body))); });
 router.get("/present", authenticate, getPresentPersonnelController);
 router.get("/me/open", authenticate, getMyOpenAttendanceController);
 router.get("/me", authenticate, getMyAttendancesController);

@@ -235,6 +235,35 @@ async function main() {
     const thirdSheet = await call(`/incidents/${third.id}/sheet`, 200, officer);
     assert(!thirdSheet.context.baseCandidates.some((p: { id: string }) => p.id === bomberoUser!.id), "Quien salió no figura para la base");
 
+    // --- Cerrar la permanencia sin QR: nunca acredita más que la última presencia verificada (+30 min) ---
+    const central = await prisma.station.create({ data: { name: "Cuartel con ubicación", latitude: -33.1, longitude: -64.7, radiusMeters: 80 } });
+    const minutesAgo = (m: number) => new Date(Date.now() - m * 60000);
+    const openStay = (checkIn: number, verified: number | null) => prisma.attendance.create({ data: { userId: keeperUser!.id, stationId: central.id, status: "OPEN", checkInAt: minutesAgo(checkIn), checkInTrust: "HIGH", lastPresenceConfirmedAt: verified === null ? null : minutesAgo(verified) } });
+    const stay1 = await openStay(180, 120);
+    const preview = await call("/attendance/me/close-remote", 200, keeper);
+    assert.equal(preview.open, true); assert(Math.abs(+new Date(preview.creditedUntil) - +minutesAgo(90)) < 5000, "Tope: última verificación + 30 min");
+    await call("/attendance/me/close-remote", 400, keeper, "POST", { leftAt: new Date(Date.now() + 3600000).toISOString() });
+    await call("/attendance/me/close-remote", 400, keeper, "POST", { leftAt: minutesAgo(240).toISOString() });
+    await call("/attendance/me/close-remote", 403, guard, "POST", {});
+    const remote1 = await call("/attendance/me/close-remote", 200, keeper, "POST", { reason: "Me fui sin escanear" });
+    assert.equal(remote1.capped, true); assert.equal(remote1.method, "REMOTE"); assert(Math.abs(remote1.workedMinutes - 90) <= 1, "Acredita 1 h 30, no las 3 h");
+    assert.equal((await prisma.attendance.findUniqueOrThrow({ where: { id: stay1.id } })).checkOutMethod, "REMOTE");
+    await openStay(60, null);
+    const remote2 = await call("/attendance/me/close-remote", 200, keeper, "POST", { latitude: -33.1001, longitude: -64.7001, accuracy: 10 });
+    assert.equal(remote2.gpsInside, true); assert.equal(remote2.method, "REMOTE_GPS"); assert(remote2.workedMinutes >= 59, "Con GPS en el cuartel cierra en el momento");
+    await openStay(120, 10);
+    const remote3 = await call("/attendance/me/close-remote", 200, keeper, "POST", { leftAt: minutesAgo(60).toISOString(), latitude: -32.5, longitude: -64.1, accuracy: 15 });
+    assert.equal(remote3.gpsInside, false); assert.equal(remote3.capped, false); assert(Math.abs(remote3.workedMinutes - 60) <= 1, "Respeta la hora declarada si es anterior al tope");
+    assert(await prisma.memberNotification.findFirst({ where: { dedupeKey: { startsWith: `remote-close:${keeperUser!.id}:` } } }), "Al 3.er cierre sin QR del mes se avisa a jefatura");
+    const missionStay = await openStay(30, 5);
+    const onMission = await prisma.missionMovement.create({ data: { incidentId: third.id, assetId: engine.id, driverUserId: keeperUser!.id, leaderUserId: keeperUser!.id, createdByUserId: users[1]!.id, crew: { create: [{ userId: keeperUser!.id }] } } });
+    await call("/attendance/me/close-remote", 409, keeper, "POST", {});
+    await prisma.missionMovement.update({ where: { id: onMission.id }, data: { returnedAt: new Date(), returnWithoutArrivalReason: "Falsa salida de prueba" } });
+    await call("/attendance/me/close-remote", 200, keeper, "POST", {});
+    assert.equal((await prisma.attendance.findUniqueOrThrow({ where: { id: missionStay.id } })).status, "CLOSED");
+    const monthly = await call(`/operations/reports/monthly?month=${new Date().toISOString().slice(0, 7)}`, 200, officer);
+    assert((monthly.totals.remoteCloses ?? 0) >= 4, "El reporte muestra los cierres sin QR");
+
     // La guardia de turno edita la planilla sin fichar con QR.
     assert.equal((await call(`/incidents/${second.id}/sheet`, 200, guard)).canWrite, true);
 

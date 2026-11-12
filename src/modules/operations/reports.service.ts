@@ -119,7 +119,7 @@ export async function monthlyReport(month: string, actor: { userId: string; role
       },
       select: {
         userId: true, checkInAt: true, checkOutAt: true, status: true,
-        checkInTrust: true, checkOutTrust: true,
+        checkInTrust: true, checkOutTrust: true, checkOutMethod: true,
         user: { select: PUBLIC_USER_SELECT },
       },
     }),
@@ -130,7 +130,7 @@ export async function monthlyReport(month: string, actor: { userId: string; role
     prisma.inspection.count({ where: { inspectionDate: { gte: bounds.dateStart, lt: bounds.dateEnd } } }),
     prisma.shift.count({ where: { date: { gte: bounds.dateStart, lt: bounds.dateEnd } } }),
   ]);
-  const people = new Map<string, { user: (typeof attendances)[number]["user"]; intervals: Array<{ start: number; end: number }>; sessions: number; openSessions: number }>();
+  const people = new Map<string, { user: (typeof attendances)[number]["user"]; intervals: Array<{ start: number; end: number }>; sessions: number; openSessions: number; remoteCloses: number }>();
   let excludedSessions = 0;
   for (const attendance of attendances) {
     if (!attendance.checkInAt || attendance.checkInTrust === "REJECTED" || attendance.checkOutTrust === "REJECTED") {
@@ -140,7 +140,9 @@ export async function monthlyReport(month: string, actor: { userId: string; role
     if (!end || end < attendance.checkInAt) { excludedSessions++; continue; }
     const duration = sessionMilliseconds(attendance.checkInAt, end, bounds.start, bounds.end);
     if (!duration) continue;
-    const row = people.get(attendance.userId) || { user: attendance.user, intervals: [], sessions: 0, openSessions: 0 };
+    const row = people.get(attendance.userId) || { user: attendance.user, intervals: [], sessions: 0, openSessions: 0, remoteCloses: 0 };
+    // Cierres sin QR: se acredito solo hasta la ultima presencia verificada; jefatura los ve en el reporte.
+    if (attendance.checkOutMethod === "REMOTE" || attendance.checkOutMethod === "REMOTE_GPS") row.remoteCloses++;
     row.intervals.push({ start: Math.max(attendance.checkInAt.getTime(), bounds.start.getTime()), end: Math.min(end.getTime(), bounds.end.getTime()) });
     row.sessions++;
     if (attendance.status === "OPEN") row.openSessions++;
@@ -148,14 +150,14 @@ export async function monthlyReport(month: string, actor: { userId: string; role
   }
   const rows = [...people.values()].map((row) => ({
     user: row.user, workedMinutes: Math.floor(unionMilliseconds(row.intervals) / 60000),
-    sessions: row.sessions, openSessions: row.openSessions,
+    sessions: row.sessions, openSessions: row.openSessions, remoteCloses: row.remoteCloses,
   })).sort((a, b) => b.workedMinutes - a.workedMinutes || a.user.username.localeCompare(b.user.username));
   return {
     month, scope: manager ? "ALL" : "SELF", generatedAt: now,
     totals: {
       workedMinutes: rows.reduce((total, row) => total + row.workedMinutes, 0),
       sessions: rows.reduce((total, row) => total + row.sessions, 0),
-      people: rows.length, openSessions: rows.reduce((total, row) => total + row.openSessions, 0),
+      people: rows.length, openSessions: rows.reduce((total, row) => total + row.openSessions, 0), remoteCloses: rows.reduce((total, row) => total + row.remoteCloses, 0),
       alerts: alerts.reduce((total, group) => total + group._count._all, 0), incidents, inspections, shifts, excludedSessions,
     },
     alertsByType: alerts.map((group) => ({ type: group.type, count: group._count._all })),

@@ -1653,6 +1653,8 @@ model Attendance {
   
   checkInTrust  AttendanceTrustLevel?
   checkOutTrust AttendanceTrustLevel?
+  // Como se cerro: QR, REMOTE (a distancia, con tope verificado) o REMOTE_GPS (sin QR, con GPS en el cuartel).
+  checkOutMethod String? @db.VarChar(20)
 
   checkInLatitude   Float?
   checkInLongitude  Float?

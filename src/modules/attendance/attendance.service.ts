@@ -196,6 +196,7 @@ export async function scanAttendanceQr(data: {
         checkOutIp: data.ip,
         checkOutDevice: data.deviceFingerprint,
         checkOutQrId: challenge.id,
+        checkOutMethod: "QR",
       },
     });
 
