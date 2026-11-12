@@ -151,8 +151,10 @@ async function main() {
     assert.equal((await prisma.asset.findUniqueOrThrow({ where: { id: asset.id } })).status, "MAINTENANCE");
     assert((await call("/members/notifications", 200, admin)).items.some((n: { title: string }) => n.title.includes("Control vehicular")));
     await call("/members/declarations", 400, staff, "POST", { category: "DRIVER_LICENSE", title: "Licencia incompleta", details: "Sin estructura no debe guardarse" });
-    const licenseBody = { category: "DRIVER_LICENSE", title: "Licencia ficticia", details: "Solo declaracion para prueba", license: { number: "LIC-PRUEBA", issuer: "Entidad ficticia", classes: ["B1", "C1"], issuedOn: "2020-01-01", expiresOn: "2021-01-01" } };
+    const licenseBody = { category: "DRIVER_LICENSE", title: "Licencia ficticia", details: "Solo declaracion para prueba", license: { number: "LIC-PRUEBA", issuer: "Entidad ficticia", classes: ["B1"], issuedOn: "2020-01-01", expiresOn: "2021-01-01" } };
     const license = await call("/members/declarations", 201, staff, "POST", licenseBody);
+    await call("/members/declarations", 400, staff, "POST", { ...licenseBody, license: { ...licenseBody.license, classes: ["B1", "C1"] } }); // un numero de licencia, una clase
+    await call("/members/declarations", 409, staff, "POST", licenseBody); // la clase B.1 ya esta cargada
     assert.equal(license.licenseNumber, "LIC-PRUEBA");
     await call(`/members/declarations?userId=${users[2]!.id}&category=DRIVER_LICENSE`, 200, sub);
     await call(`/members/declarations?userId=${users[2]!.id}&category=DRIVER_LICENSE`, 403, other);

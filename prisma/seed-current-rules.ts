@@ -35,7 +35,7 @@ export async function seedCurrentRules(tx: Prisma.TransactionClient, passwordHas
     await tx.personalDeclaration.upsert({ where: { id: id(`license_${key}`) }, update: {}, create: {
       id: id(`license_${key}`), userId: member(key), category: "DRIVER_LICENSE", title: "[DEMO] Licencia declarada de jefatura",
       details: "Declaracion personal ficticia; no habilita automaticamente a conducir un movil", licenseNumber: `DEMO-JEF-${index}`, issuer: "Emisor ficticio",
-      licenseClasses: ["B.1", "C.1"], issuedOn: day(-600), expiresOn: day(280),
+      licenseClasses: ["C.1"], issuedOn: day(-600), expiresOn: day(280),
     } });
   }
 
@@ -70,7 +70,7 @@ export async function seedCurrentRules(tx: Prisma.TransactionClient, passwordHas
     await tx.personalDeclaration.upsert({ where: { id: licenseId }, update: {}, create: {
       id: licenseId, userId: member(key), category: "DRIVER_LICENSE", title: `[DEMO] Licencia ${stale ? "modificada: revalidar" : expired ? "vencida" : "revisada por jefatura"}`,
       details: "Documento sintetico sin validez legal. Habilitacion por movil independiente de la declaracion.",
-      licenseNumber: `DEMO-ACTUAL-${index}`, issuer: "Emisor ficticio", licenseClasses: ["B.1", "C.1"],
+      licenseNumber: `DEMO-ACTUAL-${index}`, issuer: "Emisor ficticio", licenseClasses: ["C.1"],
       issuedOn: day(-400), expiresOn: day(expired ? -1 : 300), revision: stale ? 2 : 1,
     } });
     await tx.vehicleDriverAuthorization.upsert({ where: { assetId_userId: { assetId: member(`asset_${index}`), userId: member(key) } }, update: {}, create: {

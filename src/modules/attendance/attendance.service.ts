@@ -8,6 +8,9 @@ import { reportBounds, unionMilliseconds } from "../operations/reports.service";
 import { stationDate } from "../../utils/station-time";
 import { serializable } from "../../utils/transaction";
 import { generatePlainToken, getDistanceMeters, sha256 } from "./attendance.utils";
+import { onGuardNow } from "../shifts/on-guard";
+import { sortByPerson } from "../../utils/people-order";
+import { ORDER_FIELDS } from "../../utils/public-user";
 
 const QR_EXPIRATION_SECONDS = 30;
 const MAX_ALLOWED_DISTANCE_METERS = 120;
@@ -261,7 +264,7 @@ export async function getMyOpenAttendance(userId: string) {
 }
 
 export async function getPresentPersonnel() {
-  return prisma.attendance.findMany({
+  const rows = await prisma.attendance.findMany({
     where: {
       status: "OPEN",
       checkInAt: {
@@ -295,14 +298,19 @@ export async function getPresentPersonnel() {
               rank: true,
               badge: true,
               avatarUrl: true,
+              joinDate: true,
             },
           },
+          ...ORDER_FIELDS,
         },
       },
     },
-    orderBy: {
-      checkInAt: "desc",
-    },
+  });
+  // Quien esta por una guardia se distingue de quien vino sin estar de guardia; listado en orden institucional.
+  const guards = await onGuardNow(prisma, rows.map((r) => r.user.id));
+  return sortByPerson(rows, (r) => r.user).map((r) => {
+    const guard = guards.get(r.user.id);
+    return { ...r, onGuard: Boolean(guard), guardLabel: guard?.label ?? null, guardUntil: guard?.until ?? null };
   });
 }
 

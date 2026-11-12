@@ -121,7 +121,7 @@ export async function requestReinforcements(actor: Actor, incidentId: string, in
     let people = await tx.user.findMany({ where: { ...activeUser, emergencyStatusConfirmedAt: { not: null }, emergencyAvailability: { none: { cancelledAt: null, startsAt: { lte: now }, OR: [{ endsAt: null }, { endsAt: { gt: now } }] } } }, select: { id: true, profile: { select: { rank: true } } } });
     people = people.filter((p) => !busy.has(p.id) && p.id !== actor.userId && !["administrador", "comision directiva", "aspirante menor"].includes(normalizeRank(p.profile?.rank)));
     if (input.target === "DRIVERS") {
-      const drivers = new Set((await tx.vehicleDriverAuthorization.findMany({ where: { validUntil: { gte: new Date(stationDate()) } }, select: { userId: true } })).map((r) => r.userId));
+      const drivers = new Set((await tx.vehicleDriverAuthorization.findMany({ where: { status: "APPROVED", validUntil: { gte: new Date(stationDate()) } }, select: { userId: true } })).map((r) => r.userId));
       people = people.filter((p) => drivers.has(p.id));
     }
     await notify(tx, people.map((p) => p.id), `Se necesitan refuerzos${input.target === "DRIVERS" ? " (choferes)" : ""}: ${incident.title}`, `/incidents/${incidentId}/sheet`, `${incident.location}. ${input.message}`);

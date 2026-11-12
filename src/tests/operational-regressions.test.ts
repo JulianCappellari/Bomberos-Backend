@@ -86,7 +86,11 @@ test("Fechas de control usan el huso del cuartel", () => {
 });
 
 test("Las consultas operativas seleccionan solo identidad publica", () => {
-  assert.deepEqual(Object.keys(PUBLIC_USER_SELECT).sort(), ["id", "profile", "role", "username"]);
+  // _count solo trae la cantidad de cursos aprobados (para ordenar listados por cargo, antiguedad y cursos).
+  assert.deepEqual(Object.keys(PUBLIC_USER_SELECT).sort(), ["_count", "id", "profile", "role", "username"]);
+  assert.deepEqual(Object.keys(PUBLIC_USER_SELECT._count.select), ["courses"]);
+  assert.deepEqual(Object.keys(PUBLIC_USER_SELECT.profile.select).sort(), ["avatarUrl", "badge", "fullName", "joinDate", "rank"]);
   assert.equal("dni" in PUBLIC_USER_SELECT.profile.select, false);
+  assert.equal("phone" in PUBLIC_USER_SELECT.profile.select, false);
   assert.equal("passwordHash" in PUBLIC_USER_SELECT, false);
 });

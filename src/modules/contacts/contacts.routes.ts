@@ -3,9 +3,14 @@ import { authenticate } from "../../middlewares/auth.middleware";
 import { authorize } from "../../middlewares/role.middleware";
 import { createContactSchema, updateContactSchema, deleteContactSchema, listContactsSchema } from "./contacts.schemas";
 import { createContact, updateContact, deleteContact, listContacts } from "./contacts.service";
+import { staffDirectory } from "./staff-directory";
 
 const router = Router();
 router.use(authenticate);
+// Guia del personal (bomberos, Comision Directiva, etc.) con telefono para llamar si hace falta.
+router.get("/staff", async (_req, res) => {
+  res.json(await staffDirectory());
+});
 router.get("/", async (req, res) => {
   res.json(await listContacts(listContactsSchema.parse(req.query)));
 });

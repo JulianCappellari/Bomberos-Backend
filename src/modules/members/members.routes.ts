@@ -13,6 +13,9 @@ import { groups, groupSchema, saveGroup, controlEligibility } from "./groups.ser
 import { cancelParticipation, cancelParticipationSchema, listParticipations, participationSchema, recordParticipation, verifyParticipation } from "./participation.service";
 import { personalActivity } from "./personal-activity.service";
 import { acceptEquipmentIssue, myEquipmentIssues } from "./equipment-acceptance.service";
+import { drivingStatus } from "../incidents/driver-authorizations";
+import { prisma } from "../../config/prisma";
+import { OperationError } from "../operations/operations.schemas";
 const router = Router(); router.use(authenticate);
 router.get("/operational-availability",async(_req,res)=>{res.json(await operationalAvailability());});
 router.use("/courses", courses);
@@ -39,6 +42,13 @@ router.get("/profile", async (req, res) => { res.json(await profile(req.user!.us
 router.get("/profile/:userId", async (req, res) => { res.json(await profile(String(req.params.userId), req.user!)); });
 router.put("/profile", async (req, res) => { res.json(await updatePersonalProfile(personalProfileSchema.parse(req.body), req.user!)); });
 router.get("/declarations", async (req, res) => { const q = z.object({ userId: z.string().min(1).optional(), category: z.enum(["CLOTHING", "DRIVER_LICENSE"]) }).parse(req.query); res.json(await declarations(q.userId || req.user!.userId, q.category, req.user!)); });
+// Moviles que puede manejar: que exige cada uno, si la licencia lo cubre y la autorizacion de jefatura.
+router.get("/driving", async (req, res) => {
+  const { userId } = z.object({ userId: z.string().min(1).optional() }).parse(req.query);
+  const target = userId || req.user!.userId;
+  if (target !== req.user!.userId && !["ADMIN", "OPERATOR"].includes(req.user!.role)) throw new OperationError(403, "Solo jefatura consulta habilitaciones ajenas");
+  res.json(await prisma.$transaction((tx) => drivingStatus(tx, target), { isolationLevel: "RepeatableRead" }));
+});
 router.post("/declarations", async (req, res) => { res.status(201).json(await saveDeclaration(null, declarationSchema.parse(req.body), req.user!)); });
 router.put("/declarations/:id", async (req, res) => { res.json(await saveDeclaration(String(req.params.id), declarationEditSchema.parse(req.body), req.user!)); });
 router.delete("/declarations/:id", async (req, res) => { res.json(await deleteDeclaration(String(req.params.id), z.object({ revision: z.number().int().positive() }).parse(req.body).revision, req.user!)); });

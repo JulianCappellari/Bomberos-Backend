@@ -7,6 +7,7 @@ import { OperationError } from "../operations/operations.schemas";
 import { shiftInterval } from "./shifts.rules";
 import { notify, notifyCommand } from "../members/notifications.service";
 import { normalizeRank } from "../../utils/firefighter-ranks";
+import { Orderable, sortByPerson } from "../../utils/people-order";
 
 export const SHIFT_SCHEDULES = {
   DAY: { startTime: "08:00", endTime: "20:00", label: "Guardia diurna" },
@@ -98,18 +99,21 @@ export async function createShift(data: ShiftInput & { createdByUserId: string }
     return shift;
   });
 }
+// Integrantes de cada guardia en orden institucional (cargo, antiguedad, cursos).
+const ordered = <T extends { assignments: Array<{ user: Orderable }> }>(shift: T) => ({ ...shift, assignments: sortByPerson(shift.assignments, (a) => a.user) });
 export async function getAllShifts(filters?: { date?: string; from?: string; to?: string }) {
-  return prisma.shift.findMany({
+  const rows = await prisma.shift.findMany({
     where: filters?.date ? { date: dateOnly(filters.date) } : {
       date: { ...(filters?.from ? { gte: dateOnly(filters.from) } : {}), ...(filters?.to ? { lte: dateOnly(filters.to) } : {}) },
     },
     include, orderBy: [{ date: "asc" }, { startTime: "asc" }],
   });
+  return rows.map(ordered);
 }
 export async function getShiftById(id: string) {
   const shift = await prisma.shift.findUnique({ where: { id }, include });
   if (!shift) throw new OperationError(404, "Guardia no encontrada");
-  return shift;
+  return ordered(shift);
 }
 export async function updateShift(id: string, data: ShiftInput, actorUserId: string) {
   return serializable(async (tx) => {

@@ -2,6 +2,7 @@ import { notifyCommand } from "../members/notifications.service";
 import { prisma } from "../../config/prisma";
 import { serializable } from "../../utils/transaction";
 import { inspectionTimestamp } from "../inspections/inspections.rules";
+import { syncDriverRequests } from "../incidents/driver-authorizations";
 
 function normalizeNullable(value?: string | null) {
   if (value === undefined || value === null || value === "") return null;
@@ -397,6 +398,8 @@ export async function upsertVehicleData(
     },
   });
 
+  // Si cambio la licencia que exige el movil, se generan los pedidos de habilitacion para quienes ahora lo cubren.
+  if (data.licenseCategory) await syncDriverRequests(prisma);
   return vehicle;
   });
 }

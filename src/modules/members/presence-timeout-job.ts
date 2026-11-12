@@ -1,5 +1,5 @@
 import { prisma } from "../../config/prisma";
-import { expirePresence } from "./presence.service";
+import { expirePresence, remindDuePresence } from "./presence.service";
 import { signalPresenceChanged } from "../attendance/presence-events";
 
 export function startPresenceTimeoutJob() {
@@ -16,6 +16,8 @@ export function startPresenceTimeoutJob() {
         if (rows.length < 100) break;
         after = rows[rows.length - 1]!.id;
       }
+      // Aviso al celular para confirmar presencia (la notificacion se envia por Web Push).
+      await remindDuePresence(now);
     } catch { console.error("No se pudo completar el control de permanencias; se reintentará"); }
     finally { running = false; }
   }

@@ -8,6 +8,8 @@ import { serializable } from "../../utils/transaction";
 import { OperationError } from "../operations/operations.schemas";
 import { closeUserPermanences } from "./account-administration.service";
 import { permissionAllowedForRank, SpecialPermission } from "../../utils/special-permissions";
+import { sortPeople } from "../../utils/people-order";
+import { ORDER_FIELDS, PUBLIC_USER_SELECT } from "../../utils/public-user";
 function countAdministrators(tx: Prisma.TransactionClient) {
   return tx.user.count({ where: { isActive: true, isPendingApproval: false, deletedAt: null, OR: [{ role: "ADMIN" }, { profile: { rank: { equals: "Oficial", mode: "insensitive" } } }, { profile: { rank: { equals: "Administrador", mode: "insensitive" } } }] } });
 }
@@ -45,6 +47,7 @@ export async function getAllUsers() {
     include: {
       profile: true,
       emergencyContact: true,
+      ...ORDER_FIELDS,
       attendances: {
         where: {
           status: "CLOSED",
@@ -63,7 +66,7 @@ export async function getAllUsers() {
     },
   });
 
-  return users.map((user) => {
+  return sortPeople(users).map((user) => {
     const totalAttendanceMinutes = user.attendances.reduce((acc, attendance) => {
       return acc + (attendance.workedMinutes ?? 0);
     }, 0);
@@ -87,24 +90,9 @@ export async function getActiveUserRoster() {
       isPendingApproval: false,
       guardForUserId: null,
     },
-    select: {
-      id: true,
-      username: true,
-      role: true,
-      profile: {
-        select: {
-          fullName: true,
-          rank: true,
-          badge: true,
-          avatarUrl: true,
-        },
-      },
-    },
-    orderBy: {
-      username: "asc",
-    },
+    select: PUBLIC_USER_SELECT,
   });
-  return rows.filter((row) => normalizeRank(row.profile?.rank) !== "comision directiva");
+  return sortPeople(rows.filter((row) => normalizeRank(row.profile?.rank) !== "comision directiva"));
 }
 
 export async function getUserById(userId: string) {

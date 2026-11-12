@@ -53,7 +53,13 @@ async function main() {
     // Funciones nuevas: guardia propia, licencias por clase y moviles, deposito, encuestas, fotos y comision.
     assert.equal((await client.user.findUniqueOrThrow({ where: { username: "demo.guardia_bombero" } })).guardForUserId, "demo_v2_bombero");
     assert.equal((await client.vehicle.findUniqueOrThrow({ where: { id: "demo_v2_vehicle_0" } })).licenseCategory, "HEAVY");
-    assert.deepEqual((await client.personalDeclaration.findUniqueOrThrow({ where: { id: "demo_v2_extended_license_bombero" } })).licenseClasses, ["B.1", "C.1", "C.2", "D.4"]);
+    // Una licencia por clase (cada clase tiene su numero) y habilitacion de jefatura por movil.
+    const bomberoLicenses = await client.personalDeclaration.findMany({ where: { userId: "demo_v2_bombero", category: "DRIVER_LICENSE", deletedAt: null } });
+    assert(bomberoLicenses.every((l) => l.licenseClasses.length === 1), "Cada licencia es de una sola clase");
+    for (const code of ["B.1", "C.1", "C.2", "D.4"]) assert(bomberoLicenses.some((l) => l.licenseClasses[0] === code), `Licencia ${code}`);
+    assert.equal(new Set(bomberoLicenses.map((l) => l.licenseClasses[0])).size, bomberoLicenses.length, "Sin clases repetidas");
+    for (const status of ["PENDING", "APPROVED", "REJECTED"]) assert(await client.vehicleDriverAuthorization.count({ where: { status } }), `Habilitación ${status}`);
+    assert.equal((await client.vehicleDriverAuthorization.findUniqueOrThrow({ where: { assetId_userId: { assetId: "demo_v2_asset_0", userId: "demo_v2_bombero" } } })).status, "APPROVED");
     assert(await client.supplyItem.count({ where: { quantity: 0 } }) >= 1, "Hay un faltante sin stock");
     for (const status of ["PENDING", "APPROVED", "ORDERED", "DELIVERED", "REJECTED", "CANCELLED"]) assert(await client.materialRequest.count({ where: { status } }), `Pedido ${status}`);
     for (const item of await client.supplyItem.findMany({ include: { movements: { orderBy: { createdAt: "desc" }, take: 1 } } })) assert.equal(item.quantity, item.movements[0]?.balanceAfter ?? item.quantity, `Stock coherente: ${item.name}`);

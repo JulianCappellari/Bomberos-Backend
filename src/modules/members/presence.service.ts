@@ -80,6 +80,23 @@ export async function expirePresence(id: string, now = new Date()) {
     return true;
   });
 }
+/** Aviso al celular cuando toca confirmar presencia (una vez por vencimiento). Devuelve cuantos avisos genero. */
+export async function remindDuePresence(now = new Date()) {
+  const rows = await prisma.attendance.findMany({ where: { status: "OPEN", checkInQrId: { not: null }, checkInAt: { lte: now }, checkInTrust: { not: "REJECTED" }, discardedAt: null }, select: { id: true, userId: true, checkInAt: true, lastPresenceConfirmedAt: true, presenceResumeAt: true, station: { select: { name: true, requiresLocation: true } } }, take: 500 });
+  let sent = 0;
+  for (const row of rows) {
+    const created = await prisma.$transaction(async (tx) => {
+      if (await tx.missionCrew.findFirst({ where: { userId: row.userId, movement: { returnedAt: null } }, select: { userId: true } })) return false;
+      const { dueAt } = await effectivePresenceDue(tx, row.userId, row);
+      // Solo vencimientos recientes: no se avisa de algo que vencio hace horas (ya se cerro o se cierra solo).
+      if (!dueAt || dueAt > now || +now - +dueAt > 20 * 60000) return false;
+      const result = await tx.memberNotification.createMany({ data: [{ userId: row.userId, dedupeKey: `presence:${row.id}:${dueAt.toISOString()}`, title: `¿Seguís en ${row.station.name}?`, href: "/dashboard", body: row.station.requiresLocation ? "Confirmá tu presencia con la ubicación. Si no confirmás, la permanencia se cierra y no suma horas." : "Tocá para confirmar que seguís en la base. Si no confirmás, la permanencia se cierra y no suma horas." }], skipDuplicates: true });
+      return result.count > 0;
+    }, { isolationLevel: "RepeatableRead" });
+    if (created) sent++;
+  }
+  return sent;
+}
 export async function confirmPresence(input: z.infer<typeof presenceSchema>, userId: string) {
   return serializable(async (tx) => {
     const row = await tx.attendance.findFirst({ where: { id: input.attendanceId, userId, status: "OPEN" }, include: { station: true } });

@@ -13,9 +13,12 @@ import { normalizeRank } from "../../utils/firefighter-ranks";
 import { lockRow } from "../../utils/database-schema";
 import { activePeople } from "../work/work.service";
 import { notify, notifyCommand } from "../members/notifications.service";
-import { driverLicenseCheck, licensedDriverPairs } from "./driver-eligibility";
+import { authorizationActive, driverCheck, drivingStatus, licensedDriverPairs, OPEN_ENDED, syncDriverRequests } from "./driver-authorizations";
+import { currentClasses, expandClasses } from "../../utils/license-classes";
 import { missionBriefing } from "./mission-briefing";
 import { normalizeLicenseClass, VEHICLE_LICENSE_CATEGORIES, VehicleLicenseCategory } from "../../utils/license-classes";
+import { sortPeople } from "../../utils/people-order";
+import { sortByPerson } from "../../utils/people-order";
 const router = Router();
 // Orden logico y sin horas futuras. La salida puede ser hasta 1 h anterior al aviso (la alerta se carga a veces despues).
 function assertMovementTimes(t:{departedAt:Date;arrivedAt:Date|null;returnedAt:Date|null},occurredAt:Date){
@@ -51,29 +54,70 @@ router.get("/options", async (req,res) => {
       tx.incident.findMany({select:{id:true,title:true,status:true},orderBy:{occurredAt:"desc"},take:100}),
       tx.asset.findMany({where:{deletedAt:null,assetType:"VEHICLE"},select:{id:true,name:true,status:true,lastCheckDate:true,vehicle:{select:{licenseCategory:true}},maintenanceJobs:{where:{status:{in:["OPEN","IN_PROGRESS"]}},select:{blocksOperation:true}}},orderBy:{name:"asc"}}),
       tx.user.findMany({where:{deletedAt:null,isActive:true,isPendingApproval:false},select:PUBLIC_USER_SELECT}),
-      tx.vehicleDriverAuthorization.findMany({include:{license:{select:{revision:true,deletedAt:true,issuedOn:true,expiresOn:true,licenseClasses:true}}}}),
+      tx.vehicleDriverAuthorization.findMany({where:{status:{in:["APPROVED","PENDING"]}}}),
     ]);
     const today=new Date(stationDate());
-    // Conductores habilitados por su licencia segun la categoria de cada movil (sin tramite de jefatura).
+    // Conductores que hoy pueden manejar cada movil: licencia que lo cubre + autorizacion de jefatura.
     const licensed=await licensedDriverPairs(tx,today);
-    return {licensed,incidents,assets:assets.map(({maintenanceJobs,vehicle,...asset})=>{const category=(vehicle?.licenseCategory||"UNSET") as VehicleLicenseCategory;const licenseRule={category,label:VEHICLE_LICENSE_CATEGORIES[category]?.label??"",required:VEHICLE_LICENSE_CATEGORIES[category]?.required??[]};const hasBlockingIssue=maintenanceJobs.some(job=>job.blocksOperation),hasNonBlockingIssue=maintenanceJobs.some(job=>!job.blocksOperation),recentCheck=Boolean(asset.lastCheckDate&&asset.lastCheckDate>=new Date(Date.now()-7*86400000));return {...asset,licenseRule,dispatchable:!hasBlockingIssue&&(asset.status==="OPERATIONAL"||asset.status==="MAINTENANCE"&&(hasNonBlockingIssue||!recentCheck)),requiresException:asset.status==="MAINTENANCE"||hasNonBlockingIssue||!recentCheck,expiredControl:!recentCheck,hasBlockingIssue};}),people,authorizations:authorizations.map(({license,...row})=>({...row,licenseCurrent:Boolean(license&&!license.deletedAt&&license.revision===row.licenseRevision&&license.issuedOn&&license.issuedOn<=today&&license.expiresOn&&license.expiresOn>=today&&license.licenseClasses.includes(row.requiredClass))}))};
+    return {licensed,incidents,people:sortPeople(people),assets:assets.map(({maintenanceJobs,vehicle,...asset})=>{const category=(vehicle?.licenseCategory||"UNSET") as VehicleLicenseCategory;const licenseRule={category,label:VEHICLE_LICENSE_CATEGORIES[category]?.label??"",required:VEHICLE_LICENSE_CATEGORIES[category]?.required??[]};const hasBlockingIssue=maintenanceJobs.some(job=>job.blocksOperation),hasNonBlockingIssue=maintenanceJobs.some(job=>!job.blocksOperation),recentCheck=Boolean(asset.lastCheckDate&&asset.lastCheckDate>=new Date(Date.now()-7*86400000));return {...asset,licenseRule,dispatchable:!hasBlockingIssue&&(asset.status==="OPERATIONAL"||asset.status==="MAINTENANCE"&&(hasNonBlockingIssue||!recentCheck)),requiresException:asset.status==="MAINTENANCE"||hasNonBlockingIssue||!recentCheck,expiredControl:!recentCheck,hasBlockingIssue};}),authorizations:authorizations.map(row=>({...row,licenseCurrent:authorizationActive(row,today)}))};
   }, { isolationLevel: "RepeatableRead" });
   res.json(result);
 });
+// Habilitacion manual (por ejemplo, moviles sin categoria configurada): queda aprobada en el acto.
 router.put("/authorizations", authorize("ADMIN","OPERATOR"), async (req,res) => {
   const input=z.object({assetId:id,userId:id,requiredClass:z.string().trim().toUpperCase().regex(/^[A-Z0-9.]{1,12}$/).transform(normalizeLicenseClass),validUntil:z.string().date().optional(),reason:z.string().trim().min(10).max(1000),revision:z.number().int().min(0)}).strict().parse(req.body);
   if(input.userId===req.user!.userId) throw new OperationError(403,"Otra persona de jefatura debe habilitarlo como conductor");
   res.json(await serializable(async tx=>{
     await activePeople(tx,[input.userId]);
     if(!await tx.asset.findFirst({where:{id:input.assetId,assetType:"VEHICLE",deletedAt:null}}))throw new OperationError(400,"Movil no disponible");
-    const license=await tx.personalDeclaration.findFirst({where:{userId:input.userId,category:"DRIVER_LICENSE",deletedAt:null,licenseClasses:{has:input.requiredClass},issuedOn:{lte:new Date(stationDate())},expiresOn:{gte:new Date(stationDate())}},orderBy:[{expiresOn:"desc"},{id:"asc"}]});
+    const today=new Date(stationDate());
+    const licenses=await tx.personalDeclaration.findMany({where:{userId:input.userId,category:"DRIVER_LICENSE",deletedAt:null},orderBy:[{expiresOn:"desc"},{id:"asc"}]});
+    const license=licenses.find(l=>expandClasses(currentClasses(l,today)).has(input.requiredClass));
     if(!license)throw new OperationError(400,"Debe existir una licencia declarada, vigente y de la clase requerida");
     const old=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:input.assetId,userId:input.userId}}});
     if((old?.revision||0)!==input.revision)throw new OperationError(409,"La habilitacion cambio");
-    // J03: la habilitacion rige hasta el vencimiento de la licencia que la respalda.
-    const {revision,validUntil:_ignored,...fields}=input, data={...fields,licenseId:license.id,licenseRevision:license.revision,validUntil:license.expiresOn!,grantedByUserId:req.user!.userId};
+    const {revision,validUntil:_ignored,...fields}=input, data={...fields,licenseId:license.id,licenseRevision:license.revision,validUntil:OPEN_ENDED,status:"APPROVED",decidedAt:new Date(),decisionNote:input.reason,grantedByUserId:req.user!.userId};
     const row=old?await tx.vehicleDriverAuthorization.update({where:{assetId_userId:{assetId:input.assetId,userId:input.userId}},data:{...data,revision:{increment:1}}}):await tx.vehicleDriverAuthorization.create({data});
-    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"DRIVER_AUTHORIZATION_SAVED",entityType:"Asset",entityId:input.assetId,metadata:{...input,licenseId:license.id,licenseRevision:license.revision,licenseExpiresOn:license.expiresOn!.toISOString(),nextRevision:row.revision}}});
+    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"DRIVER_AUTHORIZATION_SAVED",entityType:"Asset",entityId:input.assetId,metadata:{...input,licenseId:license.id,licenseRevision:license.revision,nextRevision:row.revision}}});
+    const unit=(await tx.vehicle.findUnique({where:{assetId:input.assetId},select:{unitNumber:true}}))?.unitNumber;
+    await notify(tx,[input.userId],`Podés manejar el móvil ${unit ?? ""}`.trim(),"/me?tab=licenses","Jefatura te habilitó como conductor.");
+    return row;
+  }));
+});
+// Pedidos de habilitacion: jefatura (oficial o administrador) autoriza o rechaza que la persona maneje ESE movil.
+router.get("/drivers", authorize("ADMIN","OPERATOR"), async (_req,res) => {
+  res.json(await prisma.$transaction(async tx=>{
+    const today=new Date(stationDate());
+    const rows=await tx.vehicleDriverAuthorization.findMany({where:{OR:[{status:{in:["PENDING","APPROVED","REJECTED"]}},{status:"REVOKED",decidedAt:{gte:new Date(+today-30*86400000)}}]},orderBy:[{requestedAt:"desc"}],include:{
+      user:{select:PUBLIC_USER_SELECT},asset:{select:{id:true,name:true,vehicle:{select:{unitNumber:true,licenseCategory:true}}}},grantedBy:{select:{id:true,username:true,profile:{select:{fullName:true}}}},
+    }});
+    const users=[...new Set(rows.map(r=>r.userId))];
+    const licenses=await tx.personalDeclaration.findMany({where:{userId:{in:users},category:"DRIVER_LICENSE",deletedAt:null},select:{id:true,userId:true,licenseNumber:true,licenseClasses:true,licenseClassDetails:true,issuedOn:true,expiresOn:true,revision:true,issuer:true}});
+    const status=new Map<string,Awaited<ReturnType<typeof drivingStatus>>>();
+    for(const u of users)status.set(u,await drivingStatus(tx,u,today));
+    const out=rows.map(r=>{
+      const s=status.get(r.userId)?.find(v=>v.assetId===r.assetId);
+      return {assetId:r.assetId,userId:r.userId,revision:r.revision,status:authorizationActive(r,today)?"APPROVED":r.status==="APPROVED"?"REVOKED":r.status,requestedAt:r.requestedAt,decidedAt:r.decidedAt,decisionNote:r.decisionNote,requiredClass:r.requiredClass,
+        user:r.user,vehicle:{unitNumber:r.asset.vehicle?.unitNumber??r.asset.name,name:r.asset.name,required:s?.required??[]},covered:s?.covered??false,missing:s?.missing??[],decidedBy:r.grantedBy?r.grantedBy.profile?.fullName||r.grantedBy.username:null,
+        licenses:licenses.filter(l=>l.userId===r.userId).map(l=>({id:l.id,number:l.licenseNumber,classes:l.licenseClasses,issuer:l.issuer,expiresOn:l.expiresOn,current:currentClasses(l,today).length>0}))};
+    });
+    const order:Record<string,number>={PENDING:0,APPROVED:1,REJECTED:2,REVOKED:3};
+    return sortByPerson(out,o=>o.user).sort((a,b)=>(order[a.status]??9)-(order[b.status]??9));
+  },{isolationLevel:"RepeatableRead"}));
+});
+router.post("/authorizations/decide", authorize("ADMIN","OPERATOR"), async (req,res) => {
+  const input=z.object({assetId:id,userId:id,revision:z.number().int().positive(),decision:z.enum(["APPROVE","REJECT"]),note:z.string().trim().max(1000).default("")}).strict().refine(v=>v.decision==="APPROVE"||v.note.length>=5,{message:"Indicá por qué se rechaza",path:["note"]}).parse(req.body);
+  if(input.userId===req.user!.userId)throw new OperationError(403,"Otra persona de jefatura debe decidir tu habilitación");
+  res.json(await serializable(async tx=>{
+    const old=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:input.assetId,userId:input.userId}}});
+    if(!old||old.revision!==input.revision)throw new OperationError(409,"El pedido cambió; recargá");
+    const today=new Date(stationDate());
+    const vehicle=(await drivingStatus(tx,input.userId,today)).find(v=>v.assetId===input.assetId);
+    if(input.decision==="APPROVE"&&!vehicle?.covered)throw new OperationError(409,`Su licencia no cubre este móvil${vehicle?.missing.length?`: le falta ${vehicle.missing.join(" y ")}`:""}`);
+    const approve=input.decision==="APPROVE";
+    const row=await tx.vehicleDriverAuthorization.update({where:{assetId_userId:{assetId:input.assetId,userId:input.userId}},data:{status:approve?"APPROVED":"REJECTED",validUntil:approve?OPEN_ENDED:old.validUntil,decidedAt:new Date(),decisionNote:input.note||null,grantedByUserId:req.user!.userId,reason:input.note,revision:{increment:1}}});
+    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:approve?"DRIVER_AUTHORIZATION_APPROVED":"DRIVER_AUTHORIZATION_REJECTED",entityType:"Asset",entityId:input.assetId,metadata:{userId:input.userId,note:input.note,previousStatus:old.status,nextRevision:row.revision}}});
+    await notify(tx,[input.userId],approve?`Podés manejar el móvil ${vehicle?.unitNumber}`:`Habilitación rechazada: móvil ${vehicle?.unitNumber}`,"/me?tab=licenses",approve?"Jefatura autorizó tu habilitación como conductor.":`Motivo: ${input.note}`);
     return row;
   }));
 });
@@ -83,7 +127,8 @@ router.get("/", async (req,res)=>{
   const {incidentId}=z.object({incidentId:id}).parse(req.query);
   const rows=await prisma.$transaction(async tx=>{
     await requirePresentOrCommand(tx,req);
-    return tx.missionMovement.findMany({where:{incidentId},include:{asset:{select:{name:true,status:true}},crew:{include:{user:{select:PUBLIC_USER_SELECT}}}},orderBy:{departedAt:"desc"},take:100});
+    const rows=await tx.missionMovement.findMany({where:{incidentId},include:{asset:{select:{name:true,status:true}},crew:{include:{user:{select:PUBLIC_USER_SELECT}}}},orderBy:{departedAt:"desc"},take:100});
+    return rows.map(r=>({...r,crew:sortByPerson(r.crew,c=>c.user)}));
   });
   res.json(rows);
 });
@@ -92,12 +137,14 @@ router.post("/authorizations/revoke",authorize("ADMIN","OPERATOR"),async(req,res
   res.json(await serializable(async tx=>{
     const old=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:input.assetId,userId:input.userId}}});
     const today=new Date(stationDate());
-    if(!old||old.revision!==input.revision||old.validUntil<today)throw new OperationError(409,"La habilitación cambió o ya no está vigente");
-    const row=await tx.vehicleDriverAuthorization.update({where:{assetId_userId:{assetId:input.assetId,userId:input.userId}},data:{validUntil:new Date(+today-86400000),revision:{increment:1}}});
+    if(!old||old.revision!==input.revision||!authorizationActive(old,today))throw new OperationError(409,"La habilitación cambió o ya no está vigente");
+    const row=await tx.vehicleDriverAuthorization.update({where:{assetId_userId:{assetId:input.assetId,userId:input.userId}},data:{status:"REVOKED",validUntil:new Date(+today-86400000),decidedAt:new Date(),decisionNote:input.reason,grantedByUserId:req.user!.userId,revision:{increment:1}}});
     await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"DRIVER_AUTHORIZATION_REVOKED",entityType:"Asset",entityId:input.assetId,metadata:{...input,previousValidUntil:old.validUntil.toISOString(),nextRevision:row.revision}}});
+    await notify(tx,[input.userId],"Habilitación de conductor revocada","/me?tab=licenses",`Motivo: ${input.reason}`);
     return row;
   }));
 });
+
 router.post("/", async(req,res)=>{
   const input=z.object({incidentId:id,assetId:id,driverUserId:id,leaderUserId:id,userIds:z.array(id).min(1).max(40),dispatchExceptionReason:z.string().trim().max(1000).optional(),departedAt:z.string().datetime({offset:true}).optional(),arrivedAt:z.string().datetime({offset:true}).optional(),returnedAt:z.string().datetime({offset:true}).optional()}).strict().refine(v=>new Set(v.userIds).size===v.userIds.length&&v.userIds.includes(v.driverUserId)&&v.userIds.includes(v.leaderUserId),"Conductor y encargado deben integrar una dotacion sin repetidos").parse(req.body);
   let unauthorizedDriver=false;
@@ -128,19 +175,9 @@ router.post("/", async(req,res)=>{
     // Ni el movil ni el personal pueden estar en dos salidas que se superpongan en el tiempo.
     await assertNoOverlap(tx,{assetId:input.assetId,userIds:input.userIds,from:times.departedAt,to:times.returnedAt});
     const today=new Date(stationDate());
-    // Movil con categoria de licencia: alcanza con una licencia vigente que cubra las clases exigidas.
-    // Movil sin configurar: rige la habilitacion manual de jefatura respaldada por la licencia.
-    const byLicense=await driverLicenseCheck(tx,input.assetId,input.driverUserId,today);
+    // Conductor: licencias vigentes que cubren el movil + autorizacion de jefatura para ESE movil.
     let driverProof:{via:string;requiredClass:string;licenseId:string;licenseRevision:number;validUntil:string|null;authorizationRevision:number|null};
-    if(byLicense.configured){
-      if(!byLicense.eligible||!byLicense.licenseId){unauthorizedDriver=true;throw new OperationError(403,`El conductor no tiene licencia vigente para este móvil: le falta ${byLicense.missing.join(" y ")}. Exige ${byLicense.required.join(" + ")}`);}
-      driverProof={via:"LICENSE",requiredClass:byLicense.required.join("+"),licenseId:byLicense.licenseId,licenseRevision:byLicense.licenseRevision!,validUntil:null,authorizationRevision:null};
-    }else{
-      const permit=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:input.assetId,userId:input.driverUserId}}});
-      const license=permit?.licenseId?await tx.personalDeclaration.findFirst({where:{id:permit.licenseId,revision:permit.licenseRevision??-1,userId:input.driverUserId,category:"DRIVER_LICENSE",deletedAt:null,licenseClasses:{has:permit.requiredClass},issuedOn:{lte:today},expiresOn:{gte:today}}}):null;
-      if(!permit||permit.validUntil<today||!license){unauthorizedDriver=true;throw new OperationError(403,"El conductor necesita habilitación y la misma versión vigente de licencia revisada por jefatura; si cambió debe revalidarse. También podés configurar qué licencia exige el móvil para que se habilite solo");}
-      driverProof={via:"AUTHORIZATION",requiredClass:permit.requiredClass,licenseId:license.id,licenseRevision:license.revision,validUntil:permit.validUntil.toISOString(),authorizationRevision:permit.revision};
-    }
+    try{driverProof=await driverCheck(tx,input.assetId,input.driverUserId,today);}catch(e){unauthorizedDriver=true;throw e;}
     const row=await tx.missionMovement.create({data:{incidentId:input.incidentId,assetId:input.assetId,driverUserId:input.driverUserId,leaderUserId:input.leaderUserId,createdByUserId:req.user!.userId,dispatchExceptionReason:requiresException?input.dispatchExceptionReason:null,departedAt:times.departedAt,arrivedAt:times.arrivedAt,crew:{create:input.userIds.map(userId=>({userId}))}}});
     if(historical){
       const departure=await tx.vehicleDeparture.create({data:{operationKey:randomUUID(),requestHash:createHash("sha256").update(row.id).digest("hex"),assetId:input.assetId,departedAt:times.departedAt,returnedAt:times.returnedAt!,purpose:incident.title.slice(0,200),notes:(incident.replacesIncidentId?"Salida recargada al rehacer la intervencion ":"Salida cargada en la planilla despues del regreso, intervencion ")+incident.id,createdByUserId:req.user!.userId,crew:{create:input.userIds.map(userId=>({userId,isLeader:userId===input.leaderUserId}))}}});
@@ -188,12 +225,7 @@ router.patch("/:id/crew",async(req,res)=>{
     if(added.length)await assertNoOverlap(tx,{assetId:"-",userIds:added,from:row.departedAt,to:row.returnedAt,exceptId:row.id});
     if(input.driverUserId!==row.driverUserId){
       const today=new Date(stationDate());
-      const byLicense=await driverLicenseCheck(tx,row.assetId,input.driverUserId,today);
-      if(byLicense.configured&&!byLicense.eligible)throw new OperationError(403,`El conductor no tiene licencia vigente para este móvil: le falta ${byLicense.missing.join(" y ")}`);
-      if(!byLicense.configured){
-        const permit=await tx.vehicleDriverAuthorization.findUnique({where:{assetId_userId:{assetId:row.assetId,userId:input.driverUserId}}});
-        if(!permit||permit.validUntil<today)throw new OperationError(403,"El conductor necesita habilitación de jefatura para este móvil");
-      }
+      await driverCheck(tx,row.assetId,input.driverUserId,today);
     }
     if(removed.length)await tx.missionCrew.deleteMany({where:{movementId:row.id,userId:{in:removed}}});
     if(added.length)await tx.missionCrew.createMany({data:added.map(userId=>({movementId:row.id,userId}))});

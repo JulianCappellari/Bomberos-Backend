@@ -168,24 +168,46 @@ async function main() {
     assert.equal(third.requestNumber, 61, "Sigue después del número corregido");
     assert(await prisma.auditLog.findFirst({ where: { action: "INCIDENT_REQUEST_NUMBER_CHANGED" } }));
 
-    // --- Licencias por clase: el móvil exige su categoría y la licencia vigente habilita sola ---
+    // --- Licencias: una clase por formulario; el móvil exige su categoría y jefatura autoriza cada móvil ---
     const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
     const licenseBase = { category: "DRIVER_LICENSE", title: "Licencia de conducir", details: "Declaración del titular", license: { number: "LIC-123", issuer: "Municipalidad de Sampacho", issuedOn: day(-400), expiresOn: day(800) } };
+    const licenseOf = (number: string, code: string, extra: Record<string, string> = {}) => ({ ...licenseBase, license: { ...licenseBase.license, number, classes: [{ code }], ...extra } });
     await call("/members/declarations", 400, bombero, "POST", { ...licenseBase, license: { ...licenseBase.license, classes: ["Z9"] } });
+    await call("/members/declarations", 400, bombero, "POST", { ...licenseBase, license: { ...licenseBase.license, classes: ["B.1", "C.1"] } }); // un número, una clase
     const onlyB = await call("/members/declarations", 201, bombero, "POST", { ...licenseBase, license: { ...licenseBase.license, classes: ["b1"] } });
     assert.deepEqual(onlyB.licenseClasses, ["B.1"], "Se normaliza al formato oficial");
+    await call("/members/declarations", 409, bombero, "POST", licenseOf("LIC-999", "B.1")); // la clase ya está cargada
     const engine = await prisma.asset.create({ data: { name: "Autobomba mediana", assetType: "VEHICLE", status: "OPERATIONAL", lastCheckDate: new Date(), vehicle: { create: { unitNumber: "5", licenseCategory: "MEDIUM" } } } });
     const dispatch = { incidentId: second.id, assetId: engine.id, driverUserId: bomberoUser!.id, leaderUserId: bomberoUser!.id, userIds: [bomberoUser!.id] };
     const denied = await call("/incidents/logistics", 403, officer, "POST", dispatch);
     assert.match(denied.message, /C\.1 y D\.4/, "Dice qué clases faltan");
-    await call(`/members/declarations/${onlyB.id}`, 200, bombero, "PUT", { ...licenseBase, revision: onlyB.revision, license: { ...licenseBase.license, classes: [{ code: "C.1", grantedOn: day(-300) }, { code: "D.4", grantedOn: day(-300), expiresOn: day(-3) }] } });
+    await call("/members/declarations", 201, bombero, "POST", licenseOf("LIC-C2", "C.2"));
+    const d4 = await call("/members/declarations", 201, bombero, "POST", licenseOf("LIC-D4", "D.4", { issuedOn: day(-400), expiresOn: day(-3) }));
     const expiredD4 = await call("/incidents/logistics", 403, officer, "POST", dispatch);
-    assert.match(expiredD4.message, /D\.4/, "Una clase vencida no habilita aunque la licencia siga vigente");
-    const current = await prisma.personalDeclaration.findUniqueOrThrow({ where: { id: onlyB.id } });
-    await call(`/members/declarations/${onlyB.id}`, 200, bombero, "PUT", { ...licenseBase, revision: current.revision, license: { ...licenseBase.license, classes: [{ code: "C.2", grantedOn: day(-300) }, { code: "D.4", grantedOn: day(-300) }] } });
-    assert((await call("/incidents/logistics/options", 200, officer)).licensed.some((r: { assetId: string; userId: string }) => r.assetId === engine.id && r.userId === bomberoUser!.id), "C.2 incluye C.1: queda habilitado para el móvil");
+    assert.match(expiredD4.message, /D\.4/, "Una licencia vencida no habilita");
+    assert.equal(await prisma.vehicleDriverAuthorization.count({ where: { assetId: engine.id, userId: bomberoUser!.id } }), 0, "Sin cobertura no hay pedido");
+    await call(`/members/declarations/${d4.id}`, 200, bombero, "PUT", { ...licenseOf("LIC-D4", "D.4"), revision: d4.revision });
+    // C.2 incluye C.1: la licencia cubre el móvil y se genera el pedido para jefatura; todavía no puede manejar.
+    const request = await prisma.vehicleDriverAuthorization.findUniqueOrThrow({ where: { assetId_userId: { assetId: engine.id, userId: bomberoUser!.id } } });
+    assert.equal(request.status, "PENDING");
+    assert(await prisma.memberNotification.findFirst({ where: { title: { contains: "Habilitación de conductor pendiente" } } }), "Se avisa a jefatura del pedido");
+    const mine = await call("/members/driving", 200, bombero);
+    const unit5 = mine.find((v: { unitNumber: string }) => v.unitNumber === "5");
+    assert.equal(unit5.covered, true); assert.equal(unit5.authorization, "PENDING"); assert.equal(unit5.canDrive, false);
+    await call(`/members/driving?userId=${users[1]!.id}`, 403, bombero);
+    assert(!(await call("/incidents/logistics/options", 200, officer)).licensed.some((r: { assetId: string; userId: string }) => r.assetId === engine.id && r.userId === bomberoUser!.id), "Sin autorización no figura como conductor");
+    const pendingDispatch = await call("/incidents/logistics", 403, officer, "POST", dispatch);
+    assert.match(pendingDispatch.message, /pendiente de autorización/);
+    await call("/incidents/logistics/drivers", 403, bombero);
+    const queue = await call("/incidents/logistics/drivers", 200, officer);
+    assert(queue.some((r: { assetId: string; userId: string; status: string; covered: boolean }) => r.assetId === engine.id && r.userId === bomberoUser!.id && r.status === "PENDING" && r.covered));
+    await call("/incidents/logistics/authorizations/decide", 400, officer, "POST", { assetId: engine.id, userId: bomberoUser!.id, revision: request.revision, decision: "REJECT" }); // rechazo sin motivo
+    await call("/incidents/logistics/authorizations/decide", 409, officer, "POST", { assetId: engine.id, userId: bomberoUser!.id, revision: request.revision + 5, decision: "APPROVE" });
+    await call("/incidents/logistics/authorizations/decide", 200, officer, "POST", { assetId: engine.id, userId: bomberoUser!.id, revision: request.revision, decision: "APPROVE" });
+    assert(await prisma.memberNotification.findFirst({ where: { userId: bomberoUser!.id, title: { contains: "Podés manejar el móvil 5" } } }), "Se avisa a la persona");
+    assert((await call("/incidents/logistics/options", 200, officer)).licensed.some((r: { assetId: string; userId: string }) => r.assetId === engine.id && r.userId === bomberoUser!.id), "Autorizado: queda habilitado para el móvil");
     const departed = await call("/incidents/logistics", 201, officer, "POST", dispatch);
-    assert.equal((await prisma.auditLog.findFirstOrThrow({ where: { entityId: departed.id, action: "MISSION_DEPARTED" } }).then((r) => (r.metadata as { driverProof: { via: string } }).driverProof.via)), "LICENSE");
+    assert.equal((await prisma.auditLog.findFirstOrThrow({ where: { entityId: departed.id, action: "MISSION_DEPARTED" } }).then((r) => (r.metadata as { driverProof: { via: string } }).driverProof.via)), "LICENSE+AUTHORIZATION");
     // --- Horarios manuales: la planilla se carga a veces después de la salida o de la llegada ---
     const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
     const departedRow = await prisma.missionMovement.findUniqueOrThrow({ where: { id: departed.id } });
@@ -306,6 +328,44 @@ async function main() {
     const gpsStay = await prisma.attendance.create({ data: { userId: keeperUser!.id, stationId: central.id, checkInQrId: centralQr.id, status: "OPEN", checkInAt: minutesAgo(40), checkInTrust: "HIGH" } });
     await call("/members/presence", 400, keeper, "POST", { attendanceId: gpsStay.id, inside: true, tap: true });
     await call("/attendance/me/close-remote", 200, keeper, "POST", {});
+
+    // --- Guía del personal: teléfono para llamar, orden por cargo, antigüedad y cursos ---
+    await prisma.firefighterProfile.update({ where: { userId: bomberoUser!.id }, data: { phone: "3582 412345" } });
+    const staffList = await call("/contacts/staff", 200, bombero);
+    assert(staffList.some((p: { id: string; phone: string | null }) => p.id === bomberoUser!.id && p.phone === "3582 412345"), "Muestra el teléfono");
+    const { rankPosition } = await import("../utils/people-order");
+    const positions = staffList.map((p: { rank: string }) => rankPosition(p.rank));
+    assert.deepEqual(positions, [...positions].sort((a: number, b: number) => a - b), "Ordenado por cargo");
+    const { comparePeople } = await import("../utils/people-order");
+    const older = { profile: { rank: "Bombero", fullName: "B", joinDate: new Date("2010-01-01") }, _count: { courses: 0 } };
+    const newer = { profile: { rank: "Bombero", fullName: "A", joinDate: new Date("2020-01-01") }, _count: { courses: 9 } };
+    const moreCourses = { profile: { rank: "Bombero", fullName: "C", joinDate: new Date("2010-01-01") }, _count: { courses: 3 } };
+    assert(comparePeople({ profile: { rank: "Oficial" } }, older) < 0, "Oficial antes que bombero");
+    assert(comparePeople(older, newer) < 0, "Mismo cargo: primero el más antiguo");
+    assert(comparePeople(moreCourses, older) < 0, "Mismo cargo y antigüedad: primero el de más cursos");
+    assert(comparePeople({ profile: { rank: "Aspirante" } }, { profile: { rank: "Aspirante menor" } }) < 0, "Aspirante menor al final del cuerpo activo");
+
+    // --- En el cuartel: quien está por una guardia se distingue del resto ---
+    const hourNow = Number(new Intl.DateTimeFormat("en-GB", { timeZone: "America/Argentina/Buenos_Aires", hour: "2-digit", hourCycle: "h23" }).format(new Date()));
+    const { stationDate: sd } = await import("../utils/station-time");
+    const guardDate = hourNow < 8 ? sd(new Date(Date.now() - 86_400_000)) : sd();
+    const period = hourNow >= 8 && hourNow < 20 ? "DAY" : "NIGHT";
+    await prisma.shift.upsert({ where: { date_period: { date: new Date(guardDate), period } }, update: { assignments: { create: [{ userId: keeperUser!.id }] } }, create: { date: new Date(guardDate), period, startTime: period === "DAY" ? "08:00" : "20:00", endTime: period === "DAY" ? "20:00" : "08:00", shiftType: "Guardia", createdByUserId: users[0]!.id, assignments: { create: [{ userId: keeperUser!.id }] } } });
+    const guardStay = await prisma.attendance.create({ data: { userId: keeperUser!.id, stationId: noGps.id, checkInQrId: noGpsQr.id, status: "OPEN", checkInAt: minutesAgo(5), checkInTrust: "HIGH" } });
+    const bomberoStay = await prisma.attendance.create({ data: { userId: bomberoUser!.id, stationId: noGps.id, checkInQrId: noGpsQr.id, status: "OPEN", checkInAt: minutesAgo(35), checkInTrust: "HIGH" } });
+    const presentNow = await call("/attendance/present", 200, officer);
+    assert.equal(presentNow.find((r: { user: { id: string } }) => r.user.id === keeperUser!.id)?.onGuard, true, "Marca a quien está de guardia");
+    assert.equal(presentNow.find((r: { user: { id: string } }) => r.user.id === bomberoUser!.id)?.onGuard, false, "Quien vino sin guardia no figura de guardia");
+
+    // --- Aviso al celular para confirmar presencia (una vez por vencimiento) ---
+    const { remindDuePresence } = await import("../modules/members/presence.service");
+    assert((await remindDuePresence()) >= 1);
+    assert(await prisma.memberNotification.findFirst({ where: { userId: bomberoUser!.id, dedupeKey: { startsWith: `presence:${bomberoStay.id}:` } } }), "Se avisa al celular");
+    const again = await prisma.memberNotification.count({ where: { dedupeKey: { startsWith: `presence:${bomberoStay.id}:` } } });
+    await remindDuePresence();
+    assert.equal(await prisma.memberNotification.count({ where: { dedupeKey: { startsWith: `presence:${bomberoStay.id}:` } } }), again, "No se repite el mismo aviso");
+    assert.equal(await prisma.memberNotification.count({ where: { dedupeKey: { startsWith: `presence:${guardStay.id}:` } } }), 0, "Recién ingresado: todavía no corresponde");
+    await prisma.attendance.updateMany({ where: { id: { in: [guardStay.id, bomberoStay.id] } }, data: { status: "CLOSED", checkOutAt: new Date() } });
 
     const monthly = await call(`/operations/reports/monthly?month=${new Date().toISOString().slice(0, 7)}`, 200, officer);
     assert((monthly.totals.remoteCloses ?? 0) >= 4, "El reporte muestra los cierres sin QR");

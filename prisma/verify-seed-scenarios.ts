@@ -54,13 +54,14 @@ export async function verifySeedScenarios(client: PrismaClient) {
     if (notice.alert) assert(notice.receivedAt <= notice.alert.createdAt);
     if (notice.cancelledAt) assert(notice.cancelledAt >= notice.receivedAt && notice.cancelReason);
   }
-  const permits = await client.vehicleDriverAuthorization.findMany({ include: { license: true } });
+  // Habilitaciones con licencia de respaldo (las pendientes se generan sin licencia asociada).
+  const permits = (await client.vehicleDriverAuthorization.findMany({ include: { license: true } })).filter(p => p.licenseId);
   assert(permits.some(p => p.license?.revision === p.licenseRevision));
   assert(permits.some(p => p.license && p.license.revision !== p.licenseRevision));
   for (const permit of permits) {
     assert(permit.license && permit.userId === permit.license.userId);
     assert(permit.license.licenseClasses.includes(permit.requiredClass));
-    assert(permit.validUntil <= permit.license.expiresOn!);
+    if (permit.validUntil.getUTCFullYear() < 2999) assert(permit.validUntil <= permit.license.expiresOn!);
   }
   const claims = await client.expenseClaim.findMany({ include: { approvals: true, payments: true } });
   assert(claims.length >= 8);

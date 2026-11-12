@@ -14,6 +14,7 @@ import { lockRow } from "../../utils/database-schema";
 import {operationalStatus} from "./operational-availability";
 import { notifyAlert } from "../alerts/alert-notifications";
 import { notifyCommand } from "./notifications.service";
+import { syncDriverRequests } from "../incidents/driver-authorizations";
 
 export function canReadPrivateProfile(actor: Actor, userId: string) { return actor.userId === userId || ["ADMIN", "OPERATOR"].includes(actor.role); }
 // C06: la guardia ve contacto de emergencia y grupo sanguineo solo mientras hay una emergencia activa.
@@ -66,18 +67,20 @@ export async function saveDeclaration(id: string | null, input: z.infer<typeof d
   Object.assign(fields, { clothingBrand: input.clothing?.brand ?? null, clothingModel: input.clothing?.model ?? null, clothingSize: input.clothing?.size ?? null, clothingCondition: input.clothing?.condition ?? null, clothingNovelties: input.clothing?.novelties ?? null });
   return serializable(async (tx) => {
     let row;
+    if (input.category === "DRIVER_LICENSE" && input.license) {
+      const code = input.license.classes[0]!.code;
+      const twin = await tx.personalDeclaration.findFirst({ where: { userId: actor.userId, category: "DRIVER_LICENSE", deletedAt: null, licenseClasses: { has: code }, ...(id ? { id: { not: id } } : {}) }, select: { id: true } });
+      if (twin) throw new OperationError(409, `Ya tenés cargada una licencia clase ${code}: editala en lugar de cargar otra`);
+    }
     if (id) {
       const parsed = declarationEditSchema.parse(input);
       const before = await tx.personalDeclaration.findUnique({ where: { id } });
       const changed = await tx.personalDeclaration.updateMany({ where: { id, userId: actor.userId, category: input.category, revision: parsed.revision, deletedAt: null }, data: { ...fields, revision: { increment: 1 } } });
       if (!changed.count) throw new OperationError(409, "La declaracion cambio o no es propia");
       row = await tx.personalDeclaration.findUniqueOrThrow({ where: { id } });
-      if (before && row.category === "DRIVER_LICENSE") {
-        const sameLicense = before.licenseNumber === row.licenseNumber && [...before.licenseClasses].sort().join(",") === [...row.licenseClasses].sort().join(",");
-        const linked = await tx.vehicleDriverAuthorization.findMany({ where: { licenseId: id, licenseRevision: before.revision } });
-        // J04: se mantiene la habilitacion si numero y clases no cambian; rige hasta el nuevo vencimiento (J03).
-        if (sameLicense && row.expiresOn) for (const permit of linked) await tx.vehicleDriverAuthorization.update({ where: { assetId_userId: { assetId: permit.assetId, userId: permit.userId } }, data: { licenseRevision: row.revision, validUntil: row.expiresOn, revision: { increment: 1 } } });
-        else if (linked.length) await notifyCommand(tx, "Licencia modificada: habilitación de conductor a revalidar", "/incidents/logistics", "Cambió el número o las clases de una licencia que respaldaba habilitaciones vigentes.", actor.userId);
+      if (before && row.category === "DRIVER_LICENSE" && (before.licenseNumber !== row.licenseNumber || before.licenseClasses.join() !== row.licenseClasses.join())) {
+        // Cambio de numero o clase: jefatura lo ve; la habilitacion sigue sujeta a que las licencias cubran el movil.
+        if (await tx.vehicleDriverAuthorization.count({ where: { userId: actor.userId, status: "APPROVED" } })) await notifyCommand(tx, "Licencia modificada por un conductor habilitado", "/incidents/logistics", `Cambió el número o la clase de su licencia (${row.licenseClasses.join(", ")}). Revisá sus habilitaciones.`, actor.userId);
       }
     } else {
       if (await tx.personalDeclaration.count({ where: { userId: actor.userId, deletedAt: null } }) >= 200) throw new OperationError(409, "Limite de declaraciones activas alcanzado");
@@ -85,7 +88,9 @@ export async function saveDeclaration(id: string | null, input: z.infer<typeof d
       row = await tx.personalDeclaration.create({ data: { ...fields, category: input.category, userId: actor.userId } });
     }
     await tx.auditLog.create({ data: { actorUserId: actor.userId, action: id ? "DECLARATION_UPDATED" : "DECLARATION_CREATED", entityType: "PersonalDeclaration", entityId: row.id, metadata: { snapshot: JSON.parse(JSON.stringify(row)), userId: actor.userId } } });
-    return row;
+    // Moviles que ahora cubren sus licencias: se genera el pedido de habilitacion para jefatura.
+    const requested = row.category === "DRIVER_LICENSE" ? await syncDriverRequests(tx, { userId: actor.userId, reopen: true }) : [];
+    return { ...row, driverRequests: requested.length };
   });
 }
 export async function deleteDeclaration(id: string, revision: number, actor: Actor) {

@@ -1542,13 +1542,19 @@ model VehicleDriverAuthorization {
   licenseRevision Int?
   license PersonalDeclaration? @relation(fields:[licenseId],references:[id],onDelete:Restrict)
   user User @relation("DriverPerson", fields: [userId], references: [id], onDelete: Restrict)
-  grantedBy User @relation("DriverGrantor", fields: [grantedByUserId], references: [id], onDelete: Restrict)
+  grantedBy User? @relation("DriverGrantor", fields: [grantedByUserId], references: [id], onDelete: Restrict)
   assetId String
   userId String
   requiredClass String @db.VarChar(12)
   validUntil DateTime @db.Date
-  grantedByUserId String
-  reason String @db.VarChar(1000)
+  // Pedido de habilitacion: PENDING (se genera al cargar una licencia que cubre el movil), APPROVED, REJECTED o REVOKED.
+  // Para manejar hace falta la licencia vigente Y la autorizacion de jefatura (oficial o administrador).
+  status String @default("APPROVED") @db.VarChar(12)
+  requestedAt DateTime @default(now())
+  decidedAt DateTime?
+  decisionNote String? @db.VarChar(1000)
+  grantedByUserId String?
+  reason String @default("") @db.VarChar(1000)
   revision Int @default(1)
   asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
   @@id([assetId,userId])

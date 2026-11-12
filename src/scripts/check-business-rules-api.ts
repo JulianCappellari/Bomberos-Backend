@@ -413,9 +413,9 @@ async function main() {
     await call("/incidents/logistics",403,guard,"POST",missionBody);
     const missionLicenseData={category:"DRIVER_LICENSE",title:"Licencia ficticia para mision",details:"Habilitacion de prueba",license:{number:"TEST-MISSION",issuer:"Emisor ficticio",classes:["B1"],issuedOn:past,expiresOn:futureDay}};
     const missionLicense=await call("/members/declarations",201,staff,"POST",missionLicenseData);
-    // J03: la habilitacion rige hasta el vencimiento de la licencia, sin importar la fecha enviada.
+    // La habilitacion de jefatura no vence sola: rige mientras la licencia de la clase exigida siga vigente (se controla al despachar).
     const firstPermit=await call("/incidents/logistics/authorizations",200,sub,"PUT",{...permitBody,validUntil:stationDate(new Date(Date.now()+100*86400000))});
-    assert.equal(firstPermit.validUntil.slice(0,10),futureDay);
+    assert.equal(firstPermit.status,"APPROVED");assert.equal(firstPermit.validUntil.slice(0,10),"2999-12-31");
     await call("/incidents/logistics/authorizations",409,sub,"PUT",permitBody);
     await prisma.attendance.updateMany({where:{userId:users[2]!.id,status:"OPEN"},data:{checkInAt:new Date(Date.now()-31*60000),lastPresenceConfirmedAt:null}});
     const revoke={assetId:missionAsset.id,userId:users[2]!.id,revision:1,reason:"Retiro preventivo de habilitación en prueba"};
@@ -425,15 +425,15 @@ async function main() {
     await call("/incidents/logistics",403,guard,"POST",missionBody);
     await call("/incidents/logistics/authorizations",200,sub,"PUT",{...permitBody,revision:2});
     await call(`/members/declarations/${missionLicense.id}`,200,staff,"PUT",{...missionLicenseData,revision:1,license:{...missionLicenseData.license,number:"TEST-MISSION-RENEWED"}});
+    // Cambiar el numero de la licencia no quita la habilitacion (la clase sigue vigente), pero jefatura recibe el aviso.
     const outdatedOptions=await call("/incidents/logistics/options",200,sub);
-    assert.equal(outdatedOptions.authorizations.find((p:{assetId:string})=>p.assetId===missionAsset.id).licenseCurrent,false);
-    await call("/incidents/logistics",403,guard,"POST",missionBody);
+    assert.equal(outdatedOptions.authorizations.find((p:{assetId:string})=>p.assetId===missionAsset.id).licenseCurrent,true);
+    assert(await prisma.memberNotification.findFirst({where:{title:{contains:"Licencia modificada por un conductor habilitado"}}}),"Jefatura ve el cambio de licencia");
     const renewedPermit=await call("/incidents/logistics/authorizations",200,sub,"PUT",{...permitBody,revision:3});
     assert.equal(renewedPermit.licenseId,missionLicense.id);assert.equal(renewedPermit.licenseRevision,2);
-    // J04: editar la licencia sin cambiar numero ni clases conserva la habilitacion.
     await call(`/members/declarations/${missionLicense.id}`,200,staff,"PUT",{...missionLicenseData,revision:2,license:{...missionLicenseData.license,number:"TEST-MISSION-RENEWED",issuer:"Emisor ficticio actualizado"}});
     const keptPermit=(await call("/incidents/logistics/options",200,sub)).authorizations.find((p:{assetId:string})=>p.assetId===missionAsset.id);
-    assert.equal(keptPermit.licenseCurrent,true);assert.equal(keptPermit.licenseRevision,3);
+    assert.equal(keptPermit.licenseCurrent,true);
     assert((await call("/members/presence",200,staff)).needsConfirmation);
     const mission=await call("/incidents/logistics",201,guard,"POST",missionBody);
     const missionOverlap=await call("/fleet/water",409,guard,"POST",{...waterBody,operationKey:randomUUID(),assetId:alternateWaterAsset.id,departedAt:mission.departedAt,returnedAt:new Date().toISOString()});assert(missionOverlap.message.includes("personal"));

@@ -14,7 +14,8 @@ export const personalProfileSchema = z.object({
 }).strict();
 export const licenseSchema = z.object({
   number: z.string().trim().min(3).max(80), issuer: z.string().trim().min(3).max(160),
-  classes: z.array(classItem).min(1).max(21).refine((values) => new Set(values.map((v) => v.code)).size === values.length, "No repita clases"),
+  // Cada numero de licencia corresponde a UNA clase: por formulario se carga una sola clase con sus datos.
+  classes: z.array(classItem).length(1, "Cada licencia es de una sola clase: cargá un formulario por clase"),
   issuedOn: z.string().date(), expiresOn: z.string().date(),
 }).strict().refine((value) => value.expiresOn >= value.issuedOn, "El vencimiento debe ser igual o posterior a la emision");
 export const clothingSchema = z.object({ brand: z.string().trim().max(120), model: z.string().trim().max(120), size: z.string().trim().min(1).max(40), condition: z.enum(["OK", "REVIEW", "OUT", "UNKNOWN"]), novelties: z.string().trim().max(2000) }).strict();

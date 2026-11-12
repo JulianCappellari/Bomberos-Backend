@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import sharp from "sharp";
 import { stationDate } from "../src/utils/station-time";
 import { normalizeLicenseClass } from "../src/utils/license-classes";
+import { syncDriverRequests } from "../src/modules/incidents/driver-authorizations";
 
 // Paso 7 del seed: funciones nuevas (cuentas de guardia propias, licencias por clase y moviles,
 // deposito de vestimenta y materiales, encuestas, fotos y links, Comision Directiva y constancia).
@@ -50,11 +51,17 @@ export async function seedLatestFeatures(tx: Prisma.TransactionClient, passwordH
     mateo: [{ code: "B.1", grantedOn: iso(-1800) }, { code: "C.1", grantedOn: iso(-900) }, { code: "D.4", grantedOn: iso(-1100), expiresOn: iso(-10) }],
     camila: [{ code: "B.1", grantedOn: iso(-2500) }, { code: "D.4", grantedOn: iso(-600) }],
   };
+  // Cada numero de licencia es de UNA clase: un registro por clase, con su numero y sus fechas.
   for (const [key, classes] of Object.entries(licenses)) {
-    await tx.personalDeclaration.updateMany({ where: { id: id(`extended_license_${key}`), licenseClassDetails: { equals: Prisma.DbNull } }, data: {
-      licenseClasses: classes.map((c) => c.code), licenseClassDetails: classes.map((c) => ({ code: c.code, grantedOn: c.grantedOn, expiresOn: c.expiresOn ?? null })),
-      details: "[DEMO] Licencia ficticia con clases y fechas por clase", issuer: "[DEMO] Municipalidad de Sampacho",
-    } });
+    for (const [n, c] of classes.entries()) {
+      const data = { licenseClasses: [c.code], licenseClassDetails: [{ code: c.code, grantedOn: c.grantedOn, expiresOn: c.expiresOn ?? null }], licenseNumber: `DEMO-${key.toUpperCase()}-${c.code.replace(/\./g, "")}`, issuedOn: new Date(c.grantedOn), expiresOn: c.expiresOn ? new Date(c.expiresOn) : day(700), title: `Licencia ${c.code}`, details: "[DEMO] Licencia ficticia de una clase", issuer: "[DEMO] Municipalidad de Sampacho" };
+      if (n === 0) await tx.personalDeclaration.updateMany({ where: { id: id(`extended_license_${key}`), title: { not: `Licencia ${c.code}` } }, data });
+      else await tx.personalDeclaration.upsert({ where: { id: lf(`license_${key}_${n}`) }, update: {}, create: { id: lf(`license_${key}_${n}`), userId: id(key), category: "DRIVER_LICENSE", ...data } });
+    }
+    // Clases repetidas entre licencias del mismo titular (de pasos anteriores): queda una por clase.
+    const own = await tx.personalDeclaration.findMany({ where: { userId: id(key), category: "DRIVER_LICENSE", deletedAt: null }, orderBy: { createdAt: "asc" }, select: { id: true, licenseClasses: true } });
+    const seenCodes = new Set<string>();
+    for (const l of own) { const code = l.licenseClasses[0] ?? ""; if (seenCodes.has(code) && !l.id.startsWith(id("extended_license_")) ) await tx.personalDeclaration.update({ where: { id: l.id }, data: { deletedAt: reference } }); seenCodes.add(code); }
   }
   // Bases demo anteriores: licencias y habilitaciones con el formato viejo ("B1") pasan al oficial ("B.1").
   for (const row of await tx.personalDeclaration.findMany({ where: { category: "DRIVER_LICENSE" }, select: { id: true, licenseClasses: true } })) {
@@ -64,6 +71,17 @@ export async function seedLatestFeatures(tx: Prisma.TransactionClient, passwordH
   for (const row of await tx.vehicleDriverAuthorization.findMany({ where: { requiredClass: { in: ["B1", "C1", "C2", "C3", "E1", "D4"] } } })) {
     await tx.vehicleDriverAuthorization.update({ where: { assetId_userId: { assetId: row.assetId, userId: row.userId } }, data: { requiredClass: `${row.requiredClass[0]}.${row.requiredClass.slice(1)}` } });
   }
+
+  // Pedidos de habilitacion de conductor: la licencia sola no alcanza, jefatura autoriza cada movil.
+  // bombero y nicolas quedan autorizados; lucia y camila, pendientes; a camila se le rechaza el M-4.
+  await syncDriverRequests(tx);
+  const decide = async (key: string, asset: number, status: "APPROVED" | "REJECTED", note: string) => tx.vehicleDriverAuthorization.updateMany({
+    where: { assetId: id(`asset_${asset}`), userId: id(key), status: "PENDING" },
+    data: { status, decidedAt: at(-1, 11), decisionNote: note, grantedByUserId: id("oficial"), reason: note, validUntil: status === "APPROVED" ? new Date("2999-12-31T00:00:00Z") : day(0), revision: { increment: 1 } },
+  });
+  for (const asset of [0, 1, 3, 4, 5]) await decide("bombero", asset, "APPROVED", "[DEMO] Licencias revisadas y práctica de manejo aprobada");
+  for (const asset of [0, 1, 2, 3, 4, 5]) await decide("nicolas", asset, "APPROVED", "[DEMO] Licencias revisadas");
+  await decide("camila", 3, "REJECTED", "[DEMO] Falta la práctica de manejo con el móvil");
 
   // ---------------------------------------------------------------------------
   // 4. Deposito de vestimenta y materiales (encargada: demo.lucia, permiso PPE).
