@@ -26,14 +26,14 @@ Si ya existian, se conservan sus claves. Para restablecer explicitamente las nue
 npm run seed:demo -- --reset-passwords
 ```
 
-Ese restablecimiento no reactiva cuentas ni cambia cargos; revoca sesiones de las cuentas cuya clave cambio. No restablece las cuentas auxiliares.
+Ese restablecimiento no reactiva cuentas ni cambia cargos; revoca sesiones de las cuentas cuya clave cambio. Incluye las nueve cuentas principales y tambien `demo.directiva`, `demo.lucia`, `demo.guardia_bombero` y `demo.guardia_sofia`; no restablece el resto de las cuentas auxiliares.
 
 ## Datos de una carga limpia
 
 | Modulo | Cantidad de referencia |
 | --- | ---: |
-| Usuarios de distintos cargos y estados | 18 |
-| Bases / moviles | 2 / 6 |
+| Usuarios de distintos cargos y estados (incluye 2 cuentas de guardia propias) | 20 |
+| Bases / moviles | 3 / 6 (incluye la «Base sin ubicacion» y la licencia que exige cada movil) |
 | Turnos diurnos y nocturnos | 90 |
 | Participaciones en guardias y servicios | 176 |
 | Alertas / intervenciones | 15 / 17 |
@@ -45,7 +45,8 @@ Ese restablecimiento no reactiva cuentas ni cambia cargos; revoca sesiones de la
 | Avales de gastos / constancias de pago | 8 / 3 |
 | Cursos / correcciones de presencia | 3 / 3 |
 | Prendas institucionales / declaraciones personales | 22 / 80 |
-| Mensajes | 17 |
+| Mensajes (2 encuestas, 1 con foto, 1 con link, 1 para la Comision) | 22 |
+| Deposito: articulos / movimientos / pedidos de material | 10 / 23 / 7 |
 | Cargas de combustible / viajes de agua | 11 / 13 |
 | Cilindros ERA / compresores | 7 / 2 |
 
@@ -66,9 +67,10 @@ Las cantidades temporales pueden variar segun el horario de la primera carga: no
 | `demo.aspirante` | Aspirante mayor: permisos operativos de usuario y un trabajo remoto avalado por suboficial. |
 | `demo.guardia` | Guardia dedicado: QR, avisos, seguimiento y actas dentro de sus permisos; no equivale al administrador general. |
 | `demo.suboficial` | Segundo suboficial independiente: completar el segundo aval del gasto de oficial. |
-| `demo.lucia` | Bombera con permiso PPE; gestion de prendas institucionales, presencia sintetica y planilla de emergencia abierta. |
+| `demo.lucia` | Encargada de vestimenta y materiales (permiso PPE): deposito con faltantes, pedidos de material en todos los estados y prendas institucionales. Licencia B.1 + D.4: solo maneja moviles livianos. |
+| `demo.guardia_bombero` / `demo.guardia_sofia` | Cuentas de guardia propias, vinculadas a `demo.bombero` y `demo.sofia`: completan la planilla sin fichar; mientras estan en uso, la cuenta personal no suma asistencia ni puede usar su QR. |
 | `demo.mateo` | Bombero con funcion adicional de guardia; tareas rechazadas/retomadas para probar penalizaciones y entrega de casco pendiente. |
-| `demo.directiva` | Comision directiva con permiso FINANCE, sin acceso general de administrador. |
+| `demo.directiva` | Comision Directiva (cuenta civil): entra directo a su apartado de finanzas y transparencia; no ficha, no es convocada a alertas ni figura en dotaciones. Recibe el mensaje para la Comision. |
 | `demo.menor` | Aspirante menor: verificar las restricciones por cargo y edad. |
 | `demo.clave_inicial` | Cuenta que exige cambiar la clave inicial. |
 | `demo.inactivo` | Cuenta pausada: el ingreso debe rechazarse. |
@@ -77,6 +79,16 @@ Las cantidades temporales pueden variar segun el horario de la primera carga: no
 Los permisos delegados se crean una sola vez. Si se revocan al probar, volver a ejecutar el seed no los concede otra vez.
 
 ## Recorridos recomendados
+
+### 0. Funciones nuevas (paso 7 del seed)
+
+- **Licencias y moviles:** cada movil tiene la licencia que exige (M-14 C.2 + D.4, M-21 C.3 + D.4, M-1 y M-8 C.1 + D.4, M-2 y M-4 B.1 + D.4). En una planilla abierta, al armar una salida: `demo.nicolas` maneja todo, `demo.bombero` hasta 24.000 kg, `demo.lucia` solo livianos; `demo.sofia` no aparece apta (le falta D.4), `demo.mateo` tampoco (D.4 vencida) ni `demo.camila` (licencia vencida).
+- **Deposito:** con `demo.lucia`, Vestimenta y materiales: faltantes (guantes sin stock, remeras L y foco H4 bajo el minimo), historial de cada articulo y el pedido urgente «Foco para el camion 8» para aprobar o entregar desde el stock.
+- **Pedir material:** con `demo.guardia`, `demo.oficial` o `demo.operador` (un bombero no puede; la vestimenta personal se pide desde Mi perfil).
+- **Comunicaciones:** encuesta abierta de RCP (votar, cambiar o retirar el voto), encuesta cerrada de compras para jefatura, foto del porton y link a las clases de licencia.
+- **Comision:** con `demo.directiva`, el apartado de finanzas y transparencia y su menu civil.
+- **Constancia:** las planillas cerradas muestran el pedido de auxilio N°, N°/KM, quien recibio el pedido, la clasificacion y la vista para imprimir.
+- **Guardia propia:** con `demo.guardia_bombero`, abrir una planilla y editarla; con `demo.bombero`, intentar fichar mientras esa sesion esta abierta.
 
 ### 1. Usuario operativo y privacidad
 

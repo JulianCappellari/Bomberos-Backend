@@ -49,7 +49,19 @@ async function main() {
     assert.deepEqual(await counts(), before, "El lanzador tampoco debe duplicar datos");
     assert.equal((await client.user.findUniqueOrThrow({ where: { id: original.id } })).passwordHash, "preserved-changed-password-hash");
     assert.throws(() => execFileSync(process.execPath, [require.resolve("tsx/cli"), "prisma/seed-demo.ts"], { env: { ...process.env, NODE_ENV: "development", SEED_SCHEMA: "public" }, stdio: "pipe" }), /SEED_SCHEMA/);
-    assert.equal(await client.user.count(), 18);
+    assert.equal(await client.user.count(), 20);
+    // Funciones nuevas: guardia propia, licencias por clase y moviles, deposito, encuestas, fotos y comision.
+    assert.equal((await client.user.findUniqueOrThrow({ where: { username: "demo.guardia_bombero" } })).guardForUserId, "demo_v2_bombero");
+    assert.equal((await client.vehicle.findUniqueOrThrow({ where: { id: "demo_v2_vehicle_0" } })).licenseCategory, "HEAVY");
+    assert.deepEqual((await client.personalDeclaration.findUniqueOrThrow({ where: { id: "demo_v2_extended_license_bombero" } })).licenseClasses, ["B.1", "C.1", "C.2", "D.4"]);
+    assert(await client.supplyItem.count({ where: { quantity: 0 } }) >= 1, "Hay un faltante sin stock");
+    for (const status of ["PENDING", "APPROVED", "ORDERED", "DELIVERED", "REJECTED", "CANCELLED"]) assert(await client.materialRequest.count({ where: { status } }), `Pedido ${status}`);
+    for (const item of await client.supplyItem.findMany({ include: { movements: { orderBy: { createdAt: "desc" }, take: 1 } } })) assert.equal(item.quantity, item.movements[0]?.balanceAfter ?? item.quantity, `Stock coherente: ${item.name}`);
+    assert.equal(await client.chatPoll.count({ where: { closedAt: { not: null } } }), 1);
+    assert.equal(await client.chatAttachment.count(), 1);
+    assert(await client.station.findUnique({ where: { id: "base-sin-ubicacion" } }), "La migracion crea la base sin ubicacion");
+    assert.equal(await client.incidentSheet.count({ where: { addressNumber: "" } }), 0, "Todas las planillas tienen los datos de la constancia");
+    assert.equal(await client.incident.count({ where: { requestNumber: null } }), 0, "Todas las intervenciones tienen numero de pedido de auxilio");
     assert.equal((await client.user.findUniqueOrThrow({ where: { username: "demo.guardia" } })).role, "GUARD");
     for (const profile of await client.firefighterProfile.findMany()) assert(isAllowedFirefighterRank(profile.rank), `Cargo de demo invalido: ${profile.rank}`);
     assert.equal(await client.vehicle.count(), result.vehicles);
@@ -120,7 +132,7 @@ async function main() {
     await client.asset.delete({ where: { id: externalAsset.id } });
     await client.user.create({ data: { username: "real_account_probe", passwordHash: "not-a-real-login" } });
     await assert.rejects(() => seedDemo(client, password), /no exclusiva/);
-    assert.equal(await client.user.count(), 19);
+    assert.equal(await client.user.count(), 21);
     console.log("Seed verificado: idempotencia, claves preservadas, relaciones y rechazo de base mixta.");
   } finally {
     await client.$disconnect();

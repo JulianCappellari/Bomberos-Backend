@@ -16,7 +16,10 @@ async function main() {
     const base = `http://127.0.0.1:${address.port}/api/auth`, results = [];
     for (const key of DEMO_LOGIN_KEYS) {
       const username = `demo.${key}`;
-      const response = await fetch(base + "/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password: process.env.SEED_PASSWORD || DEMO_PASSWORD }) });
+      // El ingreso admite 10 intentos por minuto: con mas cuentas se espera el minuto en lugar de fallar.
+      const login = () => fetch(base + "/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password: process.env.SEED_PASSWORD || DEMO_PASSWORD }) });
+      let response = await login();
+      if (response.status === 429) { console.log("Límite de ingresos por minuto: esperando 61 s para seguir verificando."); await new Promise(resolve => setTimeout(resolve, 61_000)); response = await login(); }
       const data = await response.json();
       assert.equal(response.status, 200, `No pudo iniciar sesion ${username}: HTTP ${response.status}`);
       assert.equal(data.user.username, username); assert.equal(data.user.mustChangePassword, false);
@@ -26,7 +29,7 @@ async function main() {
       results.push({ usuario: username, acceso: data.user.role, resultado: "Ingreso y cierre correctos" });
     }
     console.table(results);
-    console.log("Las nueve cuentas ingresan por la API. No se conservan sesiones de esta verificacion.");
+    console.log(`Las ${DEMO_LOGIN_KEYS.length} cuentas ingresan por la API. No se conservan sesiones de esta verificacion.`);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await flushRequestAudit();

@@ -9,6 +9,7 @@ import { seedCurrentRules } from "./seed-current-rules";
 import { seedQuestionnaireScenarios } from "./seed-questionnaire";
 import { seedProfessionalScenarios } from "./seed-professional-scenarios";
 import { seedCompleteIncidentSheets } from "./seed-incident-sheets";
+import { seedLatestFeatures } from "./seed-latest-features";
 
 const id = (name: string) => `demo_v2_${name}`;
 
@@ -1335,7 +1336,7 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
     },
     transactionOptions,
   );
-  console.log("Seed 1/6: dotacion, flota y registros base completados.");
+  console.log("Seed 1/7: dotacion, flota y registros base completados.");
 
   // Each scenario family is independently atomic. This avoids holding one
   // remote Neon transaction open across thousands of sequential statements.
@@ -1343,27 +1344,32 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
     (tx) => seedExtendedScenarios(tx, passwordHash, reference),
     transactionOptions,
   );
-  console.log("Seed 2/6: escenarios operativos extendidos completados.");
+  console.log("Seed 2/7: escenarios operativos extendidos completados.");
   await client.$transaction(
     (tx) => seedCurrentRules(tx, passwordHash, reference),
     transactionOptions,
   );
-  console.log("Seed 3/6: reglas de negocio actuales completadas.");
+  console.log("Seed 3/7: reglas de negocio actuales completadas.");
   const questionnaire = await client.$transaction(
     (tx) => seedQuestionnaireScenarios(tx),
     transactionOptions,
   );
-  console.log("Seed 4/6: escenarios de permisos y coherencia completados.");
+  console.log("Seed 4/7: escenarios de permisos y coherencia completados.");
   await client.$transaction(
     (tx) => seedProfessionalScenarios(tx, reference),
     transactionOptions,
   );
-  console.log("Seed 5/6: escenarios profesionales completados.");
+  console.log("Seed 5/7: escenarios profesionales completados.");
   await client.$transaction(
     (tx) => seedCompleteIncidentSheets(tx, reference),
     transactionOptions,
   );
-  console.log("Seed 6/6: planillas de intervencion completadas.");
+  console.log("Seed 6/7: planillas de intervencion completadas.");
+  const latest = await client.$transaction(
+    (tx) => seedLatestFeatures(tx, passwordHash, reference),
+    transactionOptions,
+  );
+  console.log(`Seed 7/7: funciones nuevas (guardia propia, licencias por clase, deposito, encuestas, comision y constancia): ${JSON.stringify(latest)}`);
   if (options.resetPasswords) {
     await client.$transaction(
       (tx) => resetDemoCredentials(tx, password),
@@ -1408,6 +1414,8 @@ export async function seedDemo(client: PrismaClient, password: string, options: 
         receipts: await tx.expenseClaim.count({ where: { receiptSha256: { not: null } } }),
         attendanceCorrections: await tx.attendanceCorrection.count(),
         interventionSheets: await tx.incidentSheet.count(),
+        guardAccounts: await tx.user.count({ where: { guardForUserId: { not: null } } }), supplyItems: await tx.supplyItem.count(),
+        supplyMovements: await tx.supplyMovement.count(), materialRequests: await tx.materialRequest.count(), chatPolls: await tx.chatPoll.count(),
         extended, questionnaire,
       };
     },

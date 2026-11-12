@@ -2,7 +2,7 @@ import bcrypt from "bcrypt";
 import { Prisma } from "@prisma/client";
 
 export const DEMO_PASSWORD = "BomberosSampacho2026!";
-export const DEMO_LOGIN_KEYS = ["admin", "subjefe", "operador", "oficial", "bombero", "sofia", "nicolas", "camila", "aspirante"] as const;
+export const DEMO_LOGIN_KEYS = ["admin", "subjefe", "operador", "oficial", "bombero", "sofia", "nicolas", "camila", "aspirante", "directiva", "lucia", "guardia_bombero", "guardia_sofia"] as const;
 
 export async function resetDemoCredentials(tx: Prisma.TransactionClient, password: string) {
   const [database] = await tx.$queryRaw<Array<{ schema: string }>>`SELECT current_schema() AS schema`;

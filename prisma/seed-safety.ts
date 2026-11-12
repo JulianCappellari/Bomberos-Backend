@@ -8,6 +8,10 @@ function ownershipFilter(modelName: string, ancestors: string[] = []): Filter {
     const prefix = (name: string) => ({ [name]: { startsWith: "demo_v2_", ...(model.fields.find((f) => f.name === name)?.isRequired ? {} : { not: null }) } });
     const allowed: Record<string, unknown>[] = model.fields.some((field) => field.name === "id") ? [prefix("id")] : [];
     if (model.name === "RankingPolicy") allowed.push({ id: "main" });
+    if (model.name === "Station") allowed.push({ id: "base-sin-ubicacion" });
+    if (model.name === "SupplyMovement") allowed.push({ createdByUserId: { startsWith: "demo_v2_" } });
+    if (model.name === "MaterialRequest") allowed.push({ requestedByUserId: { startsWith: "demo_v2_" } });
+    if (model.name === "SupplyItem") allowed.push({ movements: { some: {}, every: { createdByUserId: { startsWith: "demo_v2_" } } } });
     if (model.name === "RankingTemplate") allowed.push({ id: { in: ["ranking-salon", "ranking-oficina", "ranking-cartelera"] } });
     if (model.name === "PromotionRule") allowed.push(
       {
@@ -27,6 +31,8 @@ function ownershipFilter(modelName: string, ancestors: string[] = []): Filter {
       { action: "HTTP_ACCESS_DENIED", entityType: "HttpRequest", actorUserId: null },
       { action: "DEMO_PASSWORD_RESET", entityType: "User", entityId: { startsWith: "demo_v2_" }, actorUserId: null },
       { action: "SYSTEM_PRESENCE_TIMED_OUT", entityType: "Attendance", entityId: { startsWith: "demo_v2_" }, actorUserId: null },
+      // Ingresos fallidos y bloqueos automaticos sobre cuentas demo (pasa al probar claves en la demo).
+      { action: { in: ["AUTH_LOGIN_FAILED", "AUTH_ACCOUNT_LOCKED", "AUTH_LOGIN_WHILE_LOCKED"] }, entityType: "User", entityId: { startsWith: "demo_v2_" }, actorUserId: null },
       { action: "SYSTEM_SHIFT_ABSENCE_RECORDED", entityType: "Shift", entityId: { startsWith: "demo_v2_" }, actorUserId: null, metadata: { path: ["userId"], string_starts_with: "demo_v2_" } },
     );
     if (references.length) allowed.push({ AND: [
