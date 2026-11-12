@@ -1,3 +1,4 @@
+import { ownerKey as feedbackOwnerKey } from "../src/modules/feedback/feedback.routes";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import sharp from "sharp";
@@ -189,6 +190,17 @@ export async function seedLatestFeatures(tx: Prisma.TransactionClient, passwordH
     id: lf("maintenance_brakes"), assetId: id("asset_0"), title: "Posible falla en los frenos", description: "[DEMO] Pedal largo al frenar en bajada. Revisar pastillas y nivel de líquido de frenos.",
     status: "OPEN", blocksOperation: false, createdByUserId: id("guardia"), createdAt: at(-1, 18),
   } });
+
+  // ---------------------------------------------------------------------------
+  // 8. Buzon de sugerencias, sanciones, novedades publicas y prendas gastadas.
+  // ---------------------------------------------------------------------------
+  await tx.feedback.upsert({ where: { id: lf("feedback_named") }, update: {}, create: { id: lf("feedback_named"), kind: "IDEA", title: "[DEMO] Práctica mensual de RCP", body: "Propongo una práctica de RCP el primer sábado de cada mes.", anonymous: false, authorUserId: id("sofia"), ownerKey: feedbackOwnerKey(id("sofia")), receivedOn: day(-2), sentAt: at(-2, 21) } });
+  await tx.feedback.upsert({ where: { id: lf("feedback_anon") }, update: {}, create: { id: lf("feedback_anon"), kind: "COMPLAINT", title: "[DEMO] Limpieza de los baños", body: "Faltan elementos de limpieza seguido en el baño de la planta baja.", anonymous: true, ownerKey: feedbackOwnerKey(id("bombero")), receivedOn: day(-1), readAt: at(0, 9), readByUserId: id("oficial") } });
+  await tx.sanction.upsert({ where: { id: lf("sanction_warning") }, update: {}, create: { id: lf("sanction_warning"), userId: id("camila"), kind: "WARNING", reason: "[DEMO] Llegada tarde reiterada a la guardia sin aviso previo.", startsOn: day(-3), points: 10, issuedByUserId: id("oficial"), createdAt: at(-3, 10) } });
+  await tx.sanction.upsert({ where: { id: lf("sanction_revoked") }, update: {}, create: { id: lf("sanction_revoked"), userId: id("nicolas"), kind: "OTHER", reason: "[DEMO] Uso del móvil sin autorización.", startsOn: day(-20), endsOn: day(-10), restrictions: ["NO_DRIVING"], issuedByUserId: id("oficial"), revokedAt: at(-18, 12), revokedByUserId: id("subjefe"), revokeReason: "[DEMO] Se comprobó que tenía la autorización verbal del jefe de guardia.", createdAt: at(-20, 10) } });
+  await tx.publicPost.upsert({ where: { id: lf("post_training") }, update: {}, create: { id: lf("post_training"), kind: "TRAINING", title: "[DEMO] Capacitación en rescate vehicular", summary: "La dotación practicó la extracción con herramientas hidráulicas.", body: "[DEMO] Durante la mañana del sábado la dotación practicó técnicas de estabilización y extracción vehicular con equipo hidráulico.", happenedOn: day(-6), status: "PUBLISHED", publishedAt: at(-5, 12), authorUserId: id("oficial") } });
+  await tx.publicPost.upsert({ where: { id: lf("post_draft") }, update: {}, create: { id: lf("post_draft"), kind: "NEWS", title: "[DEMO] Campaña de prevención de incendios forestales", summary: "Recomendaciones para la temporada de alto riesgo.", body: "[DEMO] Borrador pendiente de revisión.", status: "DRAFT", authorUserId: id("oficial") } });
+  await tx.personalDeclaration.updateMany({ where: { userId: id("bombero"), category: "CLOTHING", deletedAt: null, clothingCondition: "OK", title: { contains: "Botas" } }, data: { clothingCondition: "WORN", clothingNovelties: "[DEMO] Suela gastada; se siguen usando hasta el reemplazo" } });
 
   return { guardAccounts: 2, supplyItems: items.length, materialRequests: requests.length, polls: 2, sheetsCompleted: sheets.length };
 }

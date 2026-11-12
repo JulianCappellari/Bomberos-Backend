@@ -367,6 +367,95 @@ async function main() {
     assert.equal(await prisma.memberNotification.count({ where: { dedupeKey: { startsWith: `presence:${guardStay.id}:` } } }), 0, "Recién ingresado: todavía no corresponde");
     await prisma.attendance.updateMany({ where: { id: { in: [guardStay.id, bomberoStay.id] } }, data: { status: "CLOSED", checkOutAt: new Date() } });
 
+
+    // --- Buzón de sugerencias: anónimo de verdad, solo lo lee jefatura, se marca como leído ---
+    assert.deepEqual(await call("/feedback/mine", 200, bombero), []);
+    const anon = await call("/feedback", 201, bombero, "POST", { kind: "COMPLAINT", title: "Baños del cuartel", body: "Faltan elementos de limpieza seguido", anonymous: true });
+    const named = await call("/feedback", 201, bombero, "POST", { kind: "IDEA", title: "Capacitación de RCP", body: "Propongo una práctica mensual", anonymous: false });
+    await call("/feedback", 400, bombero, "POST", { kind: "SPAM", title: "x", body: "y", anonymous: true });
+    const anonRow = await prisma.feedback.findUniqueOrThrow({ where: { id: anon.id } });
+    assert.equal(anonRow.authorUserId, null, "El anónimo no guarda autor"); assert.equal(anonRow.sentAt, null, "Ni la hora exacta");
+    assert.notEqual(anonRow.ownerKey, bomberoUser!.id, "La clave del dueño no es su id");
+    assert(!(await prisma.auditLog.findFirst({ where: { entityId: anon.id } })), "No queda en la auditoría");
+    const { flushRequestAudit } = await import("../middlewares/request-audit.middleware"); await flushRequestAudit();
+    assert(!(await prisma.auditLog.findFirst({ where: { action: "HTTP_MUTATION", metadata: { path: ["route"], string_starts_with: "/api/feedback" } } })), "Ni en el registro de accesos");
+    assert.equal((await prisma.feedback.findUniqueOrThrow({ where: { id: named.id } })).authorUserId, bomberoUser!.id);
+    await call("/feedback", 403, bombero);
+    const inbox = await call("/feedback", 200, officer);
+    assert.equal(inbox.find((r: { id: string }) => r.id === anon.id).author, null, "Jefatura no ve quién lo envió");
+    assert.match(inbox.find((r: { id: string }) => r.id === named.id).author.name, /.+/);
+    assert(await prisma.memberNotification.findFirst({ where: { title: { contains: "Buzón" }, body: { startsWith: "Anónimo" } } }), "Jefatura recibe el aviso sin autor");
+    await call(`/feedback/${anon.id}/read`, 403, bombero, "POST", {});
+    await call(`/feedback/${anon.id}/read`, 200, officer, "POST", {});
+    await call(`/feedback/${named.id}/read`, 200, officer, "POST", {});
+    const mineAfter = await call("/feedback/mine", 200, bombero);
+    assert.equal(mineAfter.length, 2); assert(mineAfter.every((m: { readAt: string | null }) => m.readAt), "La persona ve que se leyó");
+    assert.equal((await call("/feedback/mine", 200, keeper)).length, 0, "Cada uno ve solo lo suyo");
+    assert(await prisma.memberNotification.findFirst({ where: { userId: bomberoUser!.id, title: { contains: "leyó tu envío" } } }), "Al que firmó se le avisa");
+
+    // --- Novedades públicas: sin sesión, solo lo publicado, sin datos personales ---
+    assert.equal((await call("/public/posts", 200)).total, 0);
+    await call("/public-posts", 403, bombero, "POST", { kind: "NEWS", title: "No permitido", summary: "Solo jefatura publica", body: "Texto de prueba" });
+    const pic = (await sharp({ create: { width: 64, height: 48, channels: 3, background: "#c62828" } }).jpeg().toBuffer()).toString("base64");
+    const news = await call("/public-posts", 201, officer, "POST", { kind: "TRAINING", title: "Capacitación de rescate vehicular", summary: "Práctica con equipo hidráulico en el cuartel", body: "Se practicó la extracción con herramientas hidráulicas.", happenedOn: new Date().toISOString().slice(0, 10), photos: [pic] });
+    assert.equal((await call("/public/posts", 200)).total, 0, "El borrador no se ve");
+    await call(`/public/posts/${news.id}`, 404);
+    await call(`/public-posts/${news.id}/publish`, 200, officer, "POST", { revision: 1 });
+    const pub = await call(`/public/posts/${news.id}`, 200);
+    assert.equal(pub.photos.length, 1); assert.equal(pub.title, "Capacitación de rescate vehicular");
+    const photoRes = await fetch(`${base}/public/posts/${news.id}/photos/${pub.photos[0].id}`);
+    assert.equal(photoRes.status, 200); assert.equal(photoRes.headers.get("content-type"), "image/jpeg");
+    assert(!("authorUserId" in pub), "No expone quién lo escribió");
+    const openIncident = await prisma.incident.create({ data: { title: "Incendio de pastizal", type: "FIRE", description: "Prueba", location: "Ruta 8 km 600", createdByUserId: users[1]!.id } });
+    await call(`/public-posts/incident-draft/${openIncident.id}`, 409, officer);
+    await prisma.incident.update({ where: { id: openIncident.id }, data: { status: "CLOSED", closedAt: new Date(), closingReport: "Se controló el foco en 40 minutos." } });
+    const incidentDraft = await call(`/public-posts/incident-draft/${openIncident.id}`, 200, officer);
+    assert.match(incidentDraft.title, /Incendio en Ruta 8 km 600/); assert.match(incidentDraft.body, /controló el foco/);
+    await call(`/public-posts/${news.id}/unpublish`, 200, officer, "POST", { revision: 2 });
+    await call(`/public/posts/${news.id}`, 404);
+
+    // --- Indumentaria: prendas gastadas que se siguen usando, para el encargado ---
+    await call("/members/declarations", 201, bombero, "POST", { category: "CLOTHING", title: "Botas de intervención", details: "Botas personales", clothing: { brand: "Marca", model: "M1", size: "42", condition: "WORN", novelties: "Suela gastada" } });
+    await call("/supplies/clothing-to-replace", 403, bombero);
+    const toReplace = await call("/supplies/clothing-to-replace", 200, keeper);
+    assert(toReplace.some((r: { title: string; clothingCondition: string; person: { id: string } }) => r.title === "Botas de intervención" && r.clothingCondition === "WORN" && r.person.id === bomberoUser!.id));
+
+    // --- Buscador de materiales: en qué móvil y en qué baulera ---
+    const searchVehicle = await prisma.vehicle.findFirstOrThrow({ where: { assetId: engine.id } });
+    const box2 = await prisma.vehicleCompartment.create({ data: { vehicleId: searchVehicle.id, name: "Baulera 2" } });
+    await prisma.vehicleInventoryItem.create({ data: { compartmentId: box2.id, name: "Destornillador plano", expectedQuantity: 2 } });
+    const found = await call(`/equipment/materials/search?q=${encodeURIComponent("destornilladores")}`, 200, bombero);
+    assert(found.vehicles.some((r: { name: string; compartment: string; vehicle: { unitNumber: string } }) => r.name === "Destornillador plano" && r.compartment === "Baulera 2" && r.vehicle.unitNumber === "5"), "Encuentra en qué móvil y baulera está (plural incluido)");
+    assert.equal((await call(`/equipment/materials/search?q=${encodeURIComponent("DESTORNILLADÓR")}`, 200, bombero)).vehicles.length >= 1, true, "Sin importar mayúsculas ni acentos");
+    assert.equal((await call("/equipment/materials/search?q=x", 200, bombero)).vehicles.length, 0);
+    await prisma.vehicleInventoryItem.create({ data: { compartmentId: box2.id, name: "Cámara térmica", expectedQuantity: 1 } });
+    assert((await call("/equipment/materials/search?q=camara%20termica", 200, bombero)).vehicles.some((r: { name: string }) => r.name === "Cámara térmica"), "Encuentra aunque se escriba sin tildes");
+
+    // --- Sanciones: legajo, puntos y funciones del sistema ---
+    const in5 = new Date(Date.now() + 5 * 86_400_000).toISOString().slice(0, 10), todayIso = new Date().toISOString().slice(0, 10);
+    await call("/sanctions", 403, bombero, "POST", { userId: keeperUser!.id, kind: "WARNING", reason: "No puede sancionar", startsOn: todayIso });
+    await call("/sanctions", 400, officer, "POST", { userId: bomberoUser!.id, kind: "SUSPENSION", reason: "Suspensión sin restricción", startsOn: todayIso, endsOn: in5 });
+    await call("/sanctions", 400, officer, "POST", { userId: bomberoUser!.id, kind: "OTHER", reason: "Restricción sin fecha de fin", startsOn: todayIso, restrictions: ["NO_DRIVING"] });
+    const sanction = await call("/sanctions", 201, officer, "POST", { userId: bomberoUser!.id, kind: "SUSPENSION", reason: "Abandono de guardia sin aviso", startsOn: todayIso, endsOn: in5, points: 25, restrictions: ["SUSPENDED"] });
+    assert(await prisma.memberNotification.findFirst({ where: { userId: bomberoUser!.id, title: { contains: "sanción" } } }), "Se avisa a la persona");
+    const ownRecord = await call("/sanctions", 200, bombero);
+    assert.equal(ownRecord[0].active, true, "La ve en su legajo");
+    await call(`/sanctions?userId=${keeperUser!.id}`, 403, bombero);
+    const blocked = await call("/incidents/logistics", 409, officer, "POST", { incidentId: third.id, assetId: engine.id, driverUserId: bomberoUser!.id, leaderUserId: bomberoUser!.id, userIds: [bomberoUser!.id], dispatchExceptionReason: "Sale con la sirena fallando: se usa bocina" });
+    assert.match(blocked.message, /sanción vigente/, "Suspendido: no integra dotaciones");
+    const rankBoard = await call(`/ranking?month=${todayIso.slice(0, 7)}`, 200, officer);
+    const bomberoRow = rankBoard.rows.find((r: { userId: string }) => r.userId === bomberoUser!.id);
+    assert.equal(bomberoRow.breakdown.sanctions, 25, "Descuenta puntos del ranking");
+    assert.equal(typeof rankBoard.lowLine, "number");
+    for (const r of rankBoard.rows as Array<{ points: number; low: boolean; rank: string }>) if (r.low) assert(r.points < rankBoard.lowLine, "En rojo solo quien está debajo de la mitad del promedio");
+    assert(Math.abs(rankBoard.lowLine - rankBoard.average / 2) < 0.11, "La línea es la mitad del promedio");
+    await call(`/sanctions/${sanction.id}/revoke`, 200, officer, "POST", { reason: "Se presentó el descargo y se aceptó", revision: sanction.revision });
+    assert.equal((await call("/sanctions", 200, bombero))[0].active, false);
+    const afterRevoke = await call(`/ranking?month=${todayIso.slice(0, 7)}`, 200, officer);
+    assert.equal(afterRevoke.rows.find((r: { userId: string }) => r.userId === bomberoUser!.id).breakdown.sanctions, 0, "Sin efecto: no descuenta");
+    const seniorityBoard = await call("/station/seniority", 200, officer);
+    assert(seniorityBoard.people.every((p: { ranking: { lowLine: number } }) => typeof p.ranking.lowLine === "number"), "El escalafón muestra el ranking");
+
     const monthly = await call(`/operations/reports/monthly?month=${new Date().toISOString().slice(0, 7)}`, 200, officer);
     assert((monthly.totals.remoteCloses ?? 0) >= 4, "El reporte muestra los cierres sin QR");
 

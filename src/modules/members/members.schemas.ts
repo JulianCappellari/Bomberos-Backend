@@ -18,7 +18,7 @@ export const licenseSchema = z.object({
   classes: z.array(classItem).length(1, "Cada licencia es de una sola clase: cargá un formulario por clase"),
   issuedOn: z.string().date(), expiresOn: z.string().date(),
 }).strict().refine((value) => value.expiresOn >= value.issuedOn, "El vencimiento debe ser igual o posterior a la emision");
-export const clothingSchema = z.object({ brand: z.string().trim().max(120), model: z.string().trim().max(120), size: z.string().trim().min(1).max(40), condition: z.enum(["OK", "REVIEW", "OUT", "UNKNOWN"]), novelties: z.string().trim().max(2000) }).strict();
+export const clothingSchema = z.object({ brand: z.string().trim().max(120), model: z.string().trim().max(120), size: z.string().trim().min(1).max(40), condition: z.enum(["OK", "WORN", "REVIEW", "OUT", "UNKNOWN"]), novelties: z.string().trim().max(2000) }).strict();
 const declarationFields = z.object({ category: z.enum(["CLOTHING", "DRIVER_LICENSE"]), title: z.string().trim().min(3).max(160), details: z.string().trim().min(3).max(4000), license: licenseSchema.optional(), clothing: clothingSchema.optional() }).strict();
 const validDeclaration = (value: z.infer<typeof declarationFields>) => value.category === "DRIVER_LICENSE" ? Boolean(value.license) && !value.clothing : Boolean(value.clothing) && !value.license;
 export const declarationSchema = declarationFields.refine(validDeclaration, "Complete los campos de licencia solo para una licencia de conducir");

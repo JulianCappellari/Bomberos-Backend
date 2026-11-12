@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { clothingToReplace } from "./clothing-to-replace";
 import { z } from "zod";
 import { authenticate } from "../../middlewares/auth.middleware";
 import { rateLimit } from "../../middlewares/rate-limit.middleware";
@@ -12,6 +13,8 @@ const router = Router();
 router.use(authenticate);
 router.get("/summary", async (req, res) => { res.json(await supplySummary(req.user!)); });
 router.get("/options", async (req, res) => { res.json(await supplyOptions(req.user!)); });
+// Encargado de indumentaria: prendas declaradas por el personal que no estan al 100% (gastadas, a revisar o fuera de uso).
+router.get("/clothing-to-replace", async (req, res) => { res.json(await clothingToReplace(req.user!)); });
 router.get("/items", async (req, res) => { res.json(await listItems(req.user!, req.query.archived === "1")); });
 router.get("/movements", async (req, res) => { res.json(await listMovements(req.user!, typeof req.query.itemId === "string" ? req.query.itemId : undefined)); });
 router.get("/requests", async (req, res) => { res.json(await listRequests(req.user!, z.enum(["all", "mine", "open"]).default("all").parse(req.query.scope))); });

@@ -8,6 +8,7 @@ import { shiftInterval } from "./shifts.rules";
 import { notify, notifyCommand } from "../members/notifications.service";
 import { normalizeRank } from "../../utils/firefighter-ranks";
 import { Orderable, sortByPerson } from "../../utils/people-order";
+import { assertNotRestricted } from "../sanctions/sanctions";
 
 export const SHIFT_SCHEDULES = {
   DAY: { startTime: "08:00", endTime: "20:00", label: "Guardia diurna" },
@@ -33,6 +34,7 @@ async function validateAssignments(
     select: { id: true },
   });
   if (users.length !== data.userIds.length) throw new OperationError(400, "Hay integrantes no habilitados");
+  await assertNotRestricted(tx, data.userIds.filter((id) => !data.keepUserIds?.includes(id)), "NO_GUARD", "no puede ser asignado a guardias");
   const unavailable = await tx.personnelAvailability.findFirst({
     where: { date: dateOnly(data.date), period: data.period, userId: { in: data.userIds }, status: "UNAVAILABLE" },
     include: { user: { select: PUBLIC_USER_SELECT } },

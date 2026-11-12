@@ -184,6 +184,8 @@ model User {
   missionsCreated MissionMovement[] @relation("MissionCreator")
   missionCrew MissionCrew[]
   courses CourseAttendance[] @relation("CourseOwner")
+  sanctions Sanction[] @relation("SanctionPerson")
+  issuedSanctions Sanction[] @relation("SanctionIssuer")
   reviewedCourses CourseAttendance[] @relation("CourseReviewer")
   receivedNotices DispatchNotice[]
   id                String    @id @default(cuid())
@@ -1945,4 +1947,79 @@ model MaterialRequest {
 
   @@index([status, createdAt])
   @@index([requestedByUserId, createdAt])
+}
+
+// Buzon de quejas, sugerencias, ideas, opiniones y mejoras. Solo lo lee jefatura/administracion.
+// Si es anonimo NO se guarda quien lo envio: solo una clave irreversible (HMAC) para que la persona vea
+// sus propios envios, y del momento solo el dia (para que no se pueda cruzar con otros registros por la hora).
+model Feedback {
+  id           String    @id @default(cuid())
+  kind         String    @db.VarChar(20)
+  title        String    @db.VarChar(160)
+  body         String    @db.VarChar(4000)
+  anonymous    Boolean
+  authorUserId String?
+  ownerKey     String    @db.VarChar(64)
+  receivedOn   DateTime  @db.Date
+  sentAt       DateTime?
+  readAt       DateTime?
+  readByUserId String?
+
+  @@index([ownerKey])
+  @@index([readAt, receivedOn])
+}
+
+// Sanciones: quedan en el legajo, descuentan puntos del ranking y pueden restringir funciones del sistema.
+model Sanction {
+  id              String    @id @default(cuid())
+  userId          String
+  kind            String    @db.VarChar(20)
+  reason          String    @db.VarChar(2000)
+  startsOn        DateTime  @db.Date
+  endsOn          DateTime? @db.Date
+  points          Int       @default(0)
+  restrictions    String[]  @default([])
+  issuedByUserId  String
+  revokedAt       DateTime?
+  revokedByUserId String?
+  revokeReason    String?   @db.VarChar(1000)
+  revision        Int       @default(1)
+  createdAt       DateTime  @default(now())
+  user            User      @relation("SanctionPerson", fields: [userId], references: [id], onDelete: Restrict, map: "Sanction_user_fkey")
+  issuedBy        User      @relation("SanctionIssuer", fields: [issuedByUserId], references: [id], onDelete: Restrict, map: "Sanction_issuer_fkey")
+
+  @@index([userId, startsOn])
+}
+
+// Novedades publicas (sin iniciar sesion): para la comunidad y los medios. Capacitaciones y, sobre todo,
+// el informe de un incidente una vez finalizado. Sin datos personales.
+model PublicPost {
+  id           String            @id @default(cuid())
+  kind         String            @db.VarChar(20)
+  title        String            @db.VarChar(160)
+  summary      String            @db.VarChar(400)
+  body         String            @db.Text
+  incidentId   String?
+  happenedOn   DateTime?         @db.Date
+  status       String            @default("DRAFT") @db.VarChar(12)
+  publishedAt  DateTime?
+  authorUserId String
+  revision     Int               @default(1)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  photos       PublicPostPhoto[]
+
+  @@index([status, publishedAt])
+}
+
+model PublicPostPhoto {
+  id        String     @id @default(cuid())
+  postId    String
+  bytes     Bytes
+  sha256    String     @db.VarChar(64)
+  position  Int        @default(0)
+  createdAt DateTime   @default(now())
+  post      PublicPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, position])
 }

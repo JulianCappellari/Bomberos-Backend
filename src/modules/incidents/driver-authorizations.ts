@@ -3,6 +3,7 @@ import { stationDate } from "../../utils/station-time";
 import { currentClasses, expandClasses, licenseCoverage, normalizeLicenseClass, VEHICLE_LICENSE_CATEGORIES, VehicleLicenseCategory } from "../../utils/license-classes";
 import { OperationError } from "../operations/operations.schemas";
 import { commandUserIds } from "../members/notifications.service";
+import { assertNotRestricted } from "../sanctions/sanctions";
 
 // Habilitacion de conductores: para manejar un movil hacen falta DOS cosas:
 // 1) las licencias vigentes de la persona cubren lo que exige el movil (cada licencia es de una clase), y
@@ -78,6 +79,7 @@ export async function driverCheck(tx: Prisma.TransactionClient, assetId: string,
   ]);
   const category = (vehicle?.licenseCategory ?? "UNSET") as VehicleLicenseCategory;
   const configured = category !== "UNSET" && Boolean(VEHICLE_LICENSE_CATEGORIES[category]);
+  await assertNotRestricted(tx, [userId], "NO_DRIVING", "no puede conducir");
   let licenseId: string | null = null, licenseRevision: number | null = null, requiredClass = auth?.requiredClass ?? "";
   if (configured) {
     const coverage = licenseCoverage(licenses, category, today);

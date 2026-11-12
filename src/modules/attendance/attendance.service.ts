@@ -12,6 +12,7 @@ import { onGuardNow } from "../shifts/on-guard";
 import { sortByPerson } from "../../utils/people-order";
 import { ORDER_FIELDS } from "../../utils/public-user";
 import { effectivePresenceDue, windowTimes } from "../members/presence.service";
+import { assertNotRestricted } from "../sanctions/sanctions";
 
 const QR_EXPIRATION_SECONDS = 30;
 const MAX_ALLOWED_DISTANCE_METERS = 120;
@@ -135,6 +136,8 @@ export async function scanAttendanceQr(data: {
     // Tampoco desde otro celular: mientras tenga la funcion de guardia abierta en algun dispositivo,
     // su cuenta personal no suma asistencia. Primero tiene que terminar la guardia.
     if (await ownerOnGuardDuty(prisma, data.userId)) throw new OperationError(403, "Tu cuenta de guardia está en uso. Cerrá sesión en la cuenta de guardia antes de registrar tu asistencia personal");
+    // Sancion con suspension del servicio vigente: no suma asistencia.
+    await assertNotRestricted(prisma, [data.userId], "SUSPENDED", "no puede registrar asistencia mientras dure la suspensión");
     action = "CHECK_IN";
 
     attendance = await prisma.attendance.create({

@@ -37,6 +37,10 @@ import { env } from "./config/env";
 import { errorHandler } from "./middlewares/errorHandler";
 import { requestAudit } from "./middlewares/request-audit.middleware";
 import { observePresenceChanges } from "./modules/attendance/presence-events";
+import feedbackRoutes from "./modules/feedback/feedback.routes";
+import { sanctionsRouter } from "./modules/sanctions/sanctions";
+import { authenticate } from "./middlewares/auth.middleware";
+import { postsAdminRouter, publicRouter } from "./modules/public-posts/public-posts";
 
 export const app = express();
 
@@ -98,6 +102,10 @@ app.use("/api/chat", chatRoutes);
 app.use("/api/audit-logs", auditRoutes);
 app.use("/api/compliance", complianceRoutes);
 app.use("/api/contacts", contactsRoutes);
+app.use("/api/feedback", feedbackRoutes);
+app.use("/api/sanctions", authenticate, sanctionsRouter);
+app.use("/api/public", publicRouter);
+app.use("/api/public-posts", postsAdminRouter);
 app.use("/api/operations", operationsRoutes);
 app.use("/api/personal-equipment", personalEquipmentRoutes);
 app.use("/api/equipment-requests", equipmentRequestsRoutes);

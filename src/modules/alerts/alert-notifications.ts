@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { commandUserIds } from "../members/notifications.service";
 import { normalizeRank } from "../../utils/firefighter-ranks";
+import { activeSanctionWhere } from "../sanctions/sanctions";
 const label = (priority: string) => priority === "HIGH" ? "alta" : priority === "MEDIUM" ? "media" : "baja";
 // D01/D03: solo se convoca a quien confirmo disponibilidad y no tiene una ausencia vigente.
 // F13: una alerta critica (prioridad alta) se informa siempre a jefatura, aunque no este disponible;
@@ -14,6 +15,8 @@ export async function notifyAlert(tx: Prisma.TransactionClient, alert: { id: str
       isPendingApproval: false,
       deletedAt: null,
       emergencyStatusConfirmedAt: { not: null },
+      // Suspendido por sancion: no se lo convoca.
+      sanctions: { none: activeSanctionWhere("SUSPENDED") },
       emergencyAvailability: {
         none: {
           cancelledAt: null,

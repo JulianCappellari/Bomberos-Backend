@@ -5,6 +5,7 @@ import { stationDate } from "../../utils/station-time";
 import { shiftInterval } from "../shifts/shifts.rules";
 import { OperationError } from "../operations/operations.schemas";
 import { notify } from "../members/notifications.service";
+import { calculateRanking, countsForAverage } from "../ranking/ranking.service";
 
 type Actor = { userId: string; role: string };
 const DAY = 86_400_000;
@@ -202,6 +203,18 @@ export async function seniority(actor: Actor) {
     prisma.courseAttendance.groupBy({ by: ["userId"], where: { status: "APPROVED" }, _count: { _all: true } }),
   ]);
   const courseCount = new Map(courses.map((c) => [c.userId, c._count._all]));
+  // Ranking de los ultimos 6 meses completos: se suma el puntaje de cada persona y queda en rango bajo quien
+  // esta por debajo de la mitad del promedio (misma regla que el ranking mensual). Tambien cuentan las sanciones vigentes.
+  const months = Array.from({ length: 6 }, (_, i) => { const d = new Date(`${stationDate().slice(0, 7)}-01T12:00:00Z`); d.setUTCMonth(d.getUTCMonth() - 1 - i); return d.toISOString().slice(0, 7); });
+  const boards = [];
+  for (const month of months) boards.push(await prisma.$transaction((tx) => calculateRanking(tx, month), { isolationLevel: "RepeatableRead", timeout: 30000 }));
+  const totals = new Map<string, number>();
+  for (const board of boards) for (const row of board.rows) totals.set(row.userId, (totals.get(row.userId) ?? 0) + row.points);
+  const scoredIds = boards[0]?.rows.filter((r) => countsForAverage(r.rank)).map((r) => r.userId) ?? [];
+  const average = scoredIds.length ? scoredIds.reduce((t, id) => t + (totals.get(id) ?? 0), 0) / scoredIds.length : 0;
+  const lowLine = Math.round(average / 2 * 10) / 10;
+  const today = new Date(stationDate());
+  const activeSanctions = await prisma.sanction.findMany({ where: { revokedAt: null, startsOn: { lte: today }, OR: [{ endsOn: null }, { endsOn: { gte: today } }] }, select: { userId: true, kind: true } });
   const ruleFor = (rank?: string | null) => rules.find((r) => normalizeRank(r.rank) === normalizeRank(rank));
   const people = users.filter((u) => u.profile && !["administrador", "guardia"].includes(normalizeRank(u.profile.rank))).map((u) => {
     const p = u.profile!;
@@ -214,7 +227,11 @@ export async function seniority(actor: Actor) {
       if (inRank !== null && inRank < rule.minYearsInRank) missing.push(`En el cargo ${inRank} de ${rule.minYearsInRank} años`);
       if (approved < rule.minApprovedCourses) missing.push(`Cursos ${approved} de ${rule.minApprovedCourses}`);
     }
-    return { userId: u.id, name: p.fullName || u.username, badge: p.badge, rank: p.rank, joinDate: p.joinDate, rankSince: p.rankSince, rankSinceEstimated: !p.rankSince, yearsService: service, yearsInRank: inRank, approvedCourses: approved, nextRank: rule?.nextRank ?? null, eligible: Boolean(rule) && missing.length === 0, missing };
+    const points = totals.get(u.id) ?? 0, low = points < lowLine;
+    const sanctions = activeSanctions.filter((s) => s.userId === u.id).length;
+    if (rule && low) missing.push(`Ranking: ${points} puntos en 6 meses, debajo de la mitad del promedio (${lowLine})`);
+    if (rule && sanctions) missing.push(sanctions === 1 ? "Tiene una sanción vigente" : `Tiene ${sanctions} sanciones vigentes`);
+    return { userId: u.id, name: p.fullName || u.username, badge: p.badge, rank: p.rank, joinDate: p.joinDate, rankSince: p.rankSince, rankSinceEstimated: !p.rankSince, yearsService: service, yearsInRank: inRank, approvedCourses: approved, ranking: { points, average: Math.round(average * 10) / 10, lowLine, low, months: months.length }, activeSanctions: sanctions, nextRank: rule?.nextRank ?? null, eligible: Boolean(rule) && missing.length === 0, missing };
   }).sort((a, b) => Number(b.eligible) - Number(a.eligible) || (b.yearsService ?? -1) - (a.yearsService ?? -1));
   return { rules, people };
 }

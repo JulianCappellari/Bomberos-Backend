@@ -45,7 +45,14 @@ async function main(){
   await prisma.rankingTemplate.updateMany({data:{active:false}});
   const recovery={month:stationDate().slice(0,7),policyRevision:1};await call("/ranking/recovery",403,guard,"POST",recovery);await call("/ranking/recovery",409,admin,"POST",recovery);
   const template={title:"Ordenar salón común",description:"Ordenar las mesas sin manipular equipos operativos.",active:true};await call("/ranking/templates",403,staff,"POST",template);const t=await call("/ranking/templates",201,admin,"POST",template);
+  // Rango bajo: debajo de la mitad del promedio del mes. users[2] suma puntos este mes; users[4] queda en 0 (en rojo).
+  await prisma.workTask.create({data:{title:"Trabajo verificado del mes",description:"Actividad real validada en prueba",createdByUserId:users[0]!.id,status:"VERIFIED",officerApproved:true,completionNotes:"Trabajo realizado con evidencia de prueba",reviewNotes:"Verificado de forma independiente",completedAt:new Date(Date.now()-3600000),reviewedAt:new Date(),reviewedByUserId:users[1]!.id,members:{create:{userId:users[2]!.id}}}});
+  const current=await call("/ranking?month="+recovery.month,200,admin);
+  assert(current.average>0);assert.equal(current.lowLine,Math.round(current.average/2*10)/10);
+  assert.equal(current.rows.find((r:{userId:string})=>r.userId===users[4]!.id).low,true,"Sin puntos y con promedio positivo: rango bajo");
+  assert.equal(current.rows.find((r:{userId:string})=>r.userId===users[2]!.id).low,false);
   const result=await call("/ranking/recovery",201,admin,"POST",recovery);assert(result.created.some((r:{userId:string})=>r.userId===users[4]!.id));assert(!result.created.some((r:{userId:string})=>r.userId===users[2]!.id));
+  assert(result.created.every((c:{userId:string})=>current.rows.find((r:{userId:string;low:boolean})=>r.userId===c.userId)?.low),"Solo se sortea entre quienes están en rojo");
   assert.equal((await call("/ranking/recovery",201,admin,"POST",recovery)).created.length,0);
   const taskList=await call("/work/tasks",200,tokens[4]);assert(!JSON.stringify(taskList).includes("rankingRecoveryKey"));
   const assigned=result.created.find((r:{userId:string})=>r.userId===users[4]!.id);

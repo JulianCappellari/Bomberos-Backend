@@ -10,6 +10,8 @@ export function requestAudit(req: Request, res: Response, next: NextFunction) {
     const denied = res.statusCode === 401 || res.statusCode === 403;
     const mutation = !["GET", "HEAD", "OPTIONS"].includes(req.method);
     if (!denied && (!mutation || !req.user)) return;
+    // Buzon de sugerencias: no se registra quien accede ni cuando (los envios pueden ser anonimos).
+    if ((req.baseUrl || "").startsWith("/api/feedback")) return;
     // Never retain request bodies, query strings, credentials or GPS in HTTP traces.
     const route = `${req.baseUrl || "/api"}${typeof req.route?.path === "string" ? req.route.path : ""}`.slice(0, 200);
     const work = prisma.auditLog.create({ data: { actorUserId: req.user?.userId || null, action: denied ? "HTTP_ACCESS_DENIED" : "HTTP_MUTATION", entityType: "HttpRequest", entityId: requestId, metadata: { method: req.method, route, status: res.statusCode } } }).catch(() => { console.error("HTTP audit persistence failed", { requestId }); });

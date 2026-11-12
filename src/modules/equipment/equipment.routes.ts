@@ -1,3 +1,4 @@
+import { searchMaterials } from "./material-search";
 import { Router } from "express";
 import { authenticate } from "../../middlewares/auth.middleware";
 import { authorize } from "../../middlewares/role.middleware";
@@ -22,6 +23,11 @@ import {
 const router = Router();
 
 router.get("/templates", authenticate, (_req, res) => { res.json(inventoryTemplates); });
+// Buscador de materiales en todos los moviles (y el deposito): en que movil y en que baulera esta.
+router.get("/materials/search", authenticate, async (req, res) => {
+  const q = String(req.query.q ?? "").trim().slice(0, 80);
+  res.json(await searchMaterials(q));
+});
 router.post("/vehicles/:vehicleId/template", authenticate, authorize("ADMIN", "OPERATOR"), async (req, res) => {
   const data = inventoryTemplateSchema.parse(req.body);
   res.status(201).json(await applyInventoryTemplate(String(req.params.vehicleId), data.template, req.user!.userId));
