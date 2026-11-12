@@ -10,8 +10,10 @@ import { stationDate } from "../../utils/station-time";
 import { notify } from "./notifications.service";
 import { gpsSuspicionReasons, recordGpsSuspicion } from "../../utils/gps-suspicion";
 const GRACE = 15 * 60000;
-function windowTimes(shown: Date) {
-  return { retryAt: new Date(+shown + GRACE), expiresAt: new Date(+shown + 2 * GRACE) };
+// La ventana para confirmar corre desde el vencimiento (cuando se manda el aviso al celular), se vea o no en pantalla:
+// a los 15 minutos la app reintenta con GPS y a los 30 la permanencia se cierra sola.
+export function windowTimes(due: Date) {
+  return { retryAt: new Date(+due + GRACE), expiresAt: new Date(+due + 2 * GRACE) };
 }
 export const presenceSchema = z.union([
   z.object({ attendanceId: z.string().min(1), inside: z.literal(false) }).strict(),
@@ -23,7 +25,7 @@ export function presenceDueAt(row: { checkInAt: Date | null; lastPresenceConfirm
   const base = [row.checkInAt, row.lastPresenceConfirmedAt, row.presenceResumeAt].filter((date): date is Date => Boolean(date)).sort((a,b)=>b.getTime()-a.getTime())[0];
   return base ? new Date(base.getTime() + 30 * 60000) : null;
 }
-async function effectivePresenceDue(tx: Prisma.TransactionClient, userId: string, row: { checkInAt: Date | null; lastPresenceConfirmedAt?: Date | null; presenceResumeAt?: Date | null }) {
+export async function effectivePresenceDue(tx: Prisma.TransactionClient, userId: string, row: { checkInAt: Date | null; lastPresenceConfirmedAt?: Date | null; presenceResumeAt?: Date | null }) {
   const ordinary = presenceDueAt(row);
   if (!row.checkInAt || !ordinary) return { dueAt: ordinary, guardUntil: null };
   const first = new Date(stationDate(new Date(row.checkInAt.getTime() - 86400000)));
@@ -48,7 +50,7 @@ export async function presenceState(userId: string) {
   const mission = await tx.missionCrew.findFirst({where:{userId,movement:{returnedAt:null}},select:{movementId:true}});
   if(mission)return {attendance:{id:row.id,stationName:row.station.name,requiresLocation},dueAt:null,needsConfirmation:false,suspendedForMission:mission.movementId};
   const { dueAt, guardUntil } = await effectivePresenceDue(tx, userId, row);
-  return { attendance: { id: row.id, stationName: row.station.name, requiresLocation }, dueAt, guardUntil, needsConfirmation: Boolean(dueAt && dueAt <= new Date()), ...(row.promptShownAt && row.promptDueAt?.getTime() === dueAt?.getTime() ? windowTimes(row.promptShownAt) : {}) };
+  return { attendance: { id: row.id, stationName: row.station.name, requiresLocation }, dueAt, guardUntil, needsConfirmation: Boolean(dueAt && dueAt <= new Date()), ...(dueAt && dueAt <= new Date() ? windowTimes(dueAt) : {}) };
   }, { isolationLevel: "RepeatableRead" });
 }
 export async function markPromptShown(userId: string, attendanceId: string, expectedDue: string) {
@@ -57,29 +59,34 @@ export async function markPromptShown(userId: string, attendanceId: string, expe
     if (!row || await tx.missionCrew.findFirst({where:{userId,movement:{returnedAt:null}}})) throw new OperationError(409,"La verificación ya no está pendiente");
     const {dueAt} = await effectivePresenceDue(tx,userId,row), now = new Date();
     if (!dueAt || dueAt > now || +dueAt !== Date.parse(expectedDue)) throw new OperationError(409,"La verificación cambió");
-    if (row.promptShownAt && row.promptDueAt?.getTime() === +dueAt) return windowTimes(row.promptShownAt);
-    await tx.attendance.update({where:{id:row.id},data:{promptShownAt:now,promptDueAt:dueAt}});
-    return windowTimes(now);
+    // Solo queda registrado cuando se vio el aviso; el plazo corre igual desde el vencimiento.
+    if (!(row.promptShownAt && row.promptDueAt?.getTime() === +dueAt)) await tx.attendance.update({where:{id:row.id},data:{promptShownAt:now,promptDueAt:dueAt}});
+    return windowTimes(dueAt);
   });
 }
 
 export async function expirePresence(id: string, now = new Date()) {
   return serializable(async tx => {
-    const row = await tx.attendance.findFirst({where:{id,status:"OPEN",checkInQrId:{not:null},checkInTrust:{not:"REJECTED"}}});
-    if (!row?.checkInAt || !row.promptShownAt || !row.promptDueAt) return false;
-    const {expiresAt} = windowTimes(row.promptShownAt);
-    if (now < expiresAt) return false;
+    const row = await tx.attendance.findFirst({where:{id,status:"OPEN",checkInQrId:{not:null},checkInTrust:{not:"REJECTED"}},include:{station:{select:{name:true}}}});
+    if (!row?.checkInAt) return false;
+    // Durante una salida la verificacion queda suspendida (se retoma al volver).
+    if (await tx.missionCrew.findFirst({where:{userId:row.userId,movement:{returnedAt:null}}})) return false;
     const {dueAt} = await effectivePresenceDue(tx,row.userId,row);
-    if (dueAt?.getTime() !== +row.promptDueAt || await tx.missionCrew.findFirst({where:{userId:row.userId,movement:{returnedAt:null}}})) {
-      await tx.attendance.update({where:{id},data:{promptDueAt:null,promptShownAt:null}});
-      return false;
-    }
-    await tx.attendance.update({where:{id},data:{status:"CLOSED",checkOutAt:expiresAt,checkOutTrust:null,workedMinutes:Math.max(0,Math.floor((+expiresAt - +row.checkInAt)/60000)),discardedAt:expiresAt,discardReason:"Cierre automatico sin revalidacion"}});
-    await tx.auditLog.create({data:{action:"SYSTEM_PRESENCE_TIMED_OUT",entityType:"Attendance",entityId:id,metadata:{userId:row.userId,shownAt:row.promptShownAt.toISOString(),closedAt:expiresAt.toISOString(),reason:"Sin confirmación válida en el plazo",discarded:true}}});
-    await notify(tx,[row.userId],"Permanencia cerrada por falta de confirmación","/attendance","La permanencia completa quedó descartada: no suma horas ni puntos. Para volver a ingresar, escanee el QR.");
+    if (!dueAt) return false;
+    const {expiresAt} = windowTimes(dueAt);
+    if (now < expiresAt) return false;
+    // Se acredita hasta el vencimiento: ultima presencia verificada + 30 min (o el fin de la guardia asignada).
+    const credited = dueAt < row.checkInAt ? row.checkInAt : dueAt;
+    const workedMinutes = Math.max(0,Math.floor((+credited - +row.checkInAt)/60000));
+    const changed = await tx.attendance.updateMany({where:{id,status:"OPEN"},data:{status:"CLOSED",checkOutAt:credited,checkOutTrust:"MEDIUM",checkOutMethod:"PRESENCE_TIMEOUT",workedMinutes,promptDueAt:null,promptShownAt:null}});
+    if (!changed.count) return false;
+    await tx.auditLog.create({data:{action:"SYSTEM_PRESENCE_TIMED_OUT",entityType:"Attendance",entityId:id,metadata:{userId:row.userId,dueAt:dueAt.toISOString(),closedAt:now.toISOString(),creditedUntil:credited.toISOString(),workedMinutes,discarded:false,reason:"Sin confirmación de presencia en 30 minutos: se acredita solo lo verificado"}}});
+    const until = credited.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",timeZone:"America/Argentina/Buenos_Aires"});
+    await notify(tx,[row.userId],"Permanencia cerrada: no confirmaste tu presencia","/attendance",`Se acreditó hasta las ${until} (tu última presencia verificada). Si seguís en ${row.station.name}, escaneá el QR para volver a ingresar.`);
     return true;
   });
 }
+
 /** Aviso al celular cuando toca confirmar presencia (una vez por vencimiento). Devuelve cuantos avisos genero. */
 export async function remindDuePresence(now = new Date()) {
   const rows = await prisma.attendance.findMany({ where: { status: "OPEN", checkInQrId: { not: null }, checkInAt: { lte: now }, checkInTrust: { not: "REJECTED" }, discardedAt: null }, select: { id: true, userId: true, checkInAt: true, lastPresenceConfirmedAt: true, presenceResumeAt: true, station: { select: { name: true, requiresLocation: true } } }, take: 500 });
@@ -103,9 +110,9 @@ export async function confirmPresence(input: z.infer<typeof presenceSchema>, use
     if (!row || !row.checkInAt) throw new OperationError(409, "La permanencia ya termino o cambio");
     if(await tx.missionCrew.findFirst({where:{userId,movement:{returnedAt:null}}}))throw new OperationError(409,"La verificacion permanece suspendida durante la salida a intervencion");
     const now = new Date();
-    if (row.promptShownAt && now >= windowTimes(row.promptShownAt).expiresAt) {
+    {
       const { dueAt } = await effectivePresenceDue(tx,userId,row);
-      if (dueAt && row.promptDueAt?.getTime() === +dueAt) throw new OperationError(409,"El plazo venció; el contador se cerrará automáticamente");
+      if (dueAt && now >= windowTimes(dueAt).expiresAt) throw new OperationError(409,"El plazo para confirmar venció: la permanencia se cierra con lo verificado. Si seguís en el cuartel, escaneá el QR");
     }
     if (input.inside && !row.checkInQrId) throw new OperationError(409, "Esta permanencia no proviene de un ingreso QR");
     if (!input.inside) {

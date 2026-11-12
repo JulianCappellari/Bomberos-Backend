@@ -8,10 +8,11 @@ export function startPresenceTimeoutJob() {
     if (running) return;
     running = true;
     try {
-      const now = new Date(), cutoff = new Date(+now - 30 * 60000);
+      // Lo minimo para vencer: ingreso + 30 min de presencia + 30 min para confirmar.
+      const now = new Date(), cutoff = new Date(+now - 60 * 60000);
       let after = "";
       for (;;) {
-        const rows = await prisma.attendance.findMany({where:{status:"OPEN",promptShownAt:{lte:cutoff},id:{gt:after}},select:{id:true},orderBy:{id:"asc"},take:100});
+        const rows = await prisma.attendance.findMany({where:{status:"OPEN",checkInQrId:{not:null},checkInAt:{lte:cutoff},id:{gt:after}},select:{id:true},orderBy:{id:"asc"},take:100});
         for (const {id} of rows) if (await expirePresence(id,now)) signalPresenceChanged();
         if (rows.length < 100) break;
         after = rows[rows.length - 1]!.id;

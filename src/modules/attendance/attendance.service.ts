@@ -11,6 +11,7 @@ import { generatePlainToken, getDistanceMeters, sha256 } from "./attendance.util
 import { onGuardNow } from "../shifts/on-guard";
 import { sortByPerson } from "../../utils/people-order";
 import { ORDER_FIELDS } from "../../utils/public-user";
+import { effectivePresenceDue, windowTimes } from "../members/presence.service";
 
 const QR_EXPIRATION_SECONDS = 30;
 const MAX_ALLOWED_DISTANCE_METERS = 120;
@@ -175,7 +176,10 @@ export async function scanAttendanceQr(data: {
 
     action = "CHECK_OUT";
 
-    const checkOutAt = new Date();
+    const now = new Date();
+    const { dueAt } = await effectivePresenceDue(prisma, data.userId, openAttendance);
+    const capped = Boolean(dueAt && openAttendance.checkInQrId && now >= windowTimes(dueAt).expiresAt);
+    const checkOutAt = capped && dueAt! > (openAttendance.checkInAt ?? dueAt!) ? dueAt! : now;
 
     const workedMinutes = openAttendance.checkInAt
       ? Math.max(
@@ -193,13 +197,13 @@ export async function scanAttendanceQr(data: {
         checkOutAt,
         workedMinutes,
         checkOutTrust: "HIGH",
+        checkOutMethod: capped ? "QR_CAPPED" : "QR",
         checkOutLatitude: data.latitude,
         checkOutLongitude: data.longitude,
         checkOutAccuracy: data.accuracy,
         checkOutIp: data.ip,
         checkOutDevice: data.deviceFingerprint,
         checkOutQrId: challenge.id,
-        checkOutMethod: "QR",
       },
     });
 

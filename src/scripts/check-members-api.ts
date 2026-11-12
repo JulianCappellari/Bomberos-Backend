@@ -271,22 +271,35 @@ async function main() {
     await call("/audit-logs", 403, sub);
     const {expirePresence} = await import("../modules/members/presence.service");
     const open = await prisma.attendance.findFirstOrThrow({where:{userId:users[2]!.id,status:"OPEN"}});
-    await prisma.attendance.update({where:{id:open.id},data:{checkInAt:new Date(Date.now()-31*60000),lastPresenceConfirmedAt:null,presenceResumeAt:null}});
+    const checkIn = new Date(Date.now()-31*60000);
+    await prisma.attendance.update({where:{id:open.id},data:{checkInAt:checkIn,lastPresenceConfirmedAt:null,presenceResumeAt:null}});
     const due = await call("/members/presence",200,staff);
     assert(due.needsConfirmation);
-    assert.equal(await expirePresence(open.id,new Date(Date.now()+3600000)),false,"Nunca cerrar sin aviso mostrado");
+    // El plazo corre desde el vencimiento (cuando se manda el aviso), se vea o no en pantalla.
+    assert.equal(Date.parse(due.expiresAt)-Date.parse(due.dueAt),1800000,"30 minutos para confirmar desde el vencimiento");
+    assert.equal(Date.parse(due.expiresAt)-Date.parse(due.retryAt),900000);
     const seen = {attendanceId:open.id,dueAt:due.dueAt};
     await call("/members/presence/shown",409,other,"POST",seen);
     const deadlines = await call("/members/presence/shown",200,staff,"POST",seen);
-    assert.deepEqual(await call("/members/presence/shown",200,staff,"POST",seen),deadlines);
-    assert.equal(Date.parse(deadlines.expiresAt)-Date.parse(deadlines.retryAt),900000);
-    assert.equal(await expirePresence(open.id,new Date(Date.parse(deadlines.expiresAt)-1)),false);
-    assert.equal(await expirePresence(open.id,new Date(deadlines.expiresAt)),true);
-    assert.equal(await expirePresence(open.id,new Date(deadlines.expiresAt)),false);
+    assert.equal(deadlines.expiresAt,due.expiresAt,"Ver el aviso no corre el plazo");
+    assert.equal(await expirePresence(open.id,new Date(Date.parse(due.expiresAt)-1)),false);
+    assert.equal(await expirePresence(open.id,new Date(due.expiresAt)),true);
+    assert.equal(await expirePresence(open.id,new Date(due.expiresAt)),false);
+    // Se acreditan solo las horas verificadas: hasta el vencimiento (ingreso + 30 min), no se descarta todo.
     const expired = await prisma.attendance.findUniqueOrThrow({where:{id:open.id}});
-    assert.equal(expired.checkOutAt!.toISOString(),deadlines.expiresAt);
-    assert.equal(expired.checkOutLatitude,null);assert.equal(expired.checkOutTrust,null);
+    assert.equal(expired.checkOutAt!.toISOString(),new Date(due.dueAt).toISOString());
+    assert.equal(expired.discardedAt,null,"No se pierde lo verificado");
+    assert.equal(expired.checkOutMethod,"PRESENCE_TIMEOUT"); assert.equal(expired.workedMinutes,30);
     assert.equal(await prisma.auditLog.count({where:{entityId:open.id,action:"SYSTEM_PRESENCE_TIMED_OUT"}}),1);
+    assert(await prisma.memberNotification.findFirst({where:{userId:users[2]!.id,title:{contains:"no confirmaste tu presencia"}}}),"Se avisa a la persona");
+    await call("/members/presence",200,staff).then((state)=>assert.equal(state.attendance,null));
+    // Sin el aviso abierto en pantalla tambien se cierra (antes quedaba abierta para siempre).
+    const neverSeen = await prisma.attendance.create({data:{userId:users[2]!.id,stationId:open.stationId,checkInQrId:open.checkInQrId,status:"OPEN",checkInAt:new Date(Date.now()-3*3600000),lastPresenceConfirmedAt:new Date(Date.now()-2*3600000),checkInTrust:"HIGH"}});
+    assert.equal(await expirePresence(neverSeen.id),true,"Se cierra aunque nunca haya abierto la app");
+    const neverSeenRow = await prisma.attendance.findUniqueOrThrow({where:{id:neverSeen.id}});
+    assert.equal(neverSeenRow.workedMinutes,90,"Ingreso 3 h antes, última confirmación 2 h antes: se acreditan 1 h 30");
+    const monthly = await call(`/operations/reports/monthly?month=${new Date().toISOString().slice(0,7)}`,200,admin);
+    assert((monthly.totals.unconfirmed ?? 0) >= 2,"Jefatura ve los cierres por no confirmar en el reporte");
     console.log(`API personal: ${paths} caminos HTTP aprobados en esquema aislado.`);
     if (preview) {
       const { env } = await import("../config/env"); env.corsOrigins.push("http://localhost:3217");

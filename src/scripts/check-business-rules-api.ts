@@ -282,6 +282,13 @@ async function main() {
     const lateControl=await call("/inspections",201,minor,"POST",{...inspection,draftId:draft.id,responsibleUserIds:[users[3]!.id,late.id]});
     await call("/inspections/drafts/"+draft.id+"/participants",409,minor,"PUT",{revision:joined.revision,userIds:[users[3]!.id,late.id,users[2]!.id]});
     assert((await call(`/inspections/${lateControl.id}/confirm`,200,lateToken,"POST",{})).complete);
+    // QR de salida con una confirmacion de presencia vencida: se acredita solo hasta la ultima presencia verificada.
+    const lateStay=await prisma.attendance.findFirstOrThrow({where:{userId:late.id,status:"OPEN"}});
+    await prisma.attendance.update({where:{id:lateStay.id},data:{checkInAt:new Date(Date.now()-3*3600000),lastPresenceConfirmedAt:new Date(Date.now()-2*3600000),presenceResumeAt:null}});
+    const exitQr=await call("/attendance/qr-challenges",201,guard,"POST",{stationId:station.id});
+    await call("/attendance/scan",200,lateToken,"POST",{qrToken:exitQr.qrToken,latitude:-33,longitude:-64,accuracy:5,deviceFingerprint:"late-test-device"});
+    const lateExit=await prisma.attendance.findUniqueOrThrow({where:{id:lateStay.id}});
+    assert.equal(lateExit.status,"CLOSED");assert.equal(lateExit.checkOutMethod,"QR_CAPPED");assert.equal(lateExit.workedMinutes,90,"Se acredita hasta la última confirmación + 30 min, no las 3 h");
     const multi = await call("/inspections", 201, minor, "POST", { ...inspection, responsibleUserIds: [users[3]!.id, users[2]!.id] });
     assert.equal(multi.confirmationsComplete, false);
     const attendanceForSignature=await prisma.attendance.findFirstOrThrow({where:{userId:users[2]!.id,status:"OPEN"}});
