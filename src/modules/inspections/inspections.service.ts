@@ -84,6 +84,7 @@ export async function createInspection(data: {
   inspectionTime: string;
   observations?: string | null;
   sectionComments?: Array<{ compartmentId: string; observations: string }>;
+  fluids?: { oil: "OK" | "LOW" | "ADDED"; coolant: "OK" | "LOW" | "ADDED"; fuel: "FULL" | "THREE_QUARTERS" | "HALF" | "QUARTER" | "RESERVE" };
   leaderUserId: string;
   responsibleUserIds: string[];
   createdByUserId: string;
@@ -217,6 +218,9 @@ export async function createInspection(data: {
         draftId:draft.id,
         vehicleId: data.vehicleId,
         incidentType: data.incidentType,
+        oilLevel: data.fluids?.oil ?? null,
+        coolantLevel: data.fluids?.coolant ?? null,
+        fuelLevel: data.fluids?.fuel ?? null,
         inspectionDate,
         inspectionTime: normalizeNullable(data.inspectionTime),
         observations,

@@ -68,7 +68,7 @@ async function main() {
     assert(await client.inspectionItem.count() > await client.vehicleInventoryItem.count() + result.vehicles * 3);
     assert.equal(await client.controlGroup.count(), 2);
     assert.equal((await client.personalDeclaration.findUniqueOrThrow({ where: { id: "demo_v2_personal_clothing" } })).clothingSize, "L");
-    assert.equal(await client.airCylinder.count(), 7);
+    assert.equal(await client.airCylinder.count(), 8); // 7 del inventario ERA + 1 de reserva con poca carga (novedades del movil en salida)
     assert.equal(await client.airCompressor.count(), result.compressors);
     assert(await client.personalEquipment.count() > 0);
     assert(await client.operationalDocument.count() > 0);

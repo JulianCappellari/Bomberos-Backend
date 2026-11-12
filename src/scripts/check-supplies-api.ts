@@ -213,12 +213,31 @@ async function main() {
     await prisma.maintenanceJob.create({ data: { assetId: engine.id, title: "Sirena con falso contacto", description: "Funciona de a ratos; usar bocina", blocksOperation: false, createdByUserId: users[1]!.id } });
     await prisma.complianceRecord.create({ data: { subjectType: "ASSET", assetId: engine.id, category: "VTV", title: "VTV 2026", expiresAt: new Date(Date.now() - 2 * 86_400_000), createdByUserId: users[1]!.id } });
     assert.equal((await call("/incidents/logistics/briefing", 200, bombero)).length, 0, "Sin salida activa no muestra nada");
+    // Fluidos del control, faltantes con cantidad y ERA con poca carga.
+    const engineVehicle = await prisma.vehicle.update({ where: { assetId: engine.id }, data: { fuelType: "Gasoil Súper", mileage: 120500, nextOilChangeMileage: 120000 } });
+    const box = await prisma.vehicleCompartment.create({ data: { vehicleId: engineVehicle.id, name: "Baulera 1" } });
+    const hose = await prisma.vehicleInventoryItem.create({ data: { compartmentId: box.id, name: "Manguera 1\"", expectedQuantity: 2 } });
+    await prisma.inspection.create({ data: { vehicleId: engineVehicle.id, inspectionDate: new Date(), oilLevel: "LOW", coolantLevel: "ADDED", fuelLevel: "RESERVE", summaryMissing: 1,
+      items: { create: [{ inventoryItemId: hose.id, expectedQuantity: 2, observedQuantity: 1, result: "MISSING", observations: "Una quedó en el último incendio" }] } } });
+    await assert.rejects(prisma.$executeRawUnsafe(`UPDATE "Inspection" SET "fuelLevel" = 'EMPTY' WHERE "vehicleId" = '${engineVehicle.id}'`), "La base rechaza niveles inventados");
+    const eraAsset = await prisma.asset.create({ data: { name: "Cilindro ERA prueba", assetType: "PPE", status: "OPERATIONAL" } });
+    const era = await prisma.airCylinder.create({ data: { assetId: eraAsset.id, code: "ERA-T1", serialNumber: "SN-T1", ratedPressureBar: 300, pressureBar: 100, vehicleAssetId: engine.id } });
+    await prisma.airHydroTest.create({ data: { cylinderId: era.id, result: "PASS", testedOn: new Date(Date.now() - 900 * 86_400_000), validUntil: new Date(Date.now() - 30 * 86_400_000), certificateReference: "PH-T1", notes: "prueba", registeredByUserId: users[0]!.id } });
+    const { createInspectionSchema } = await import("../modules/inspections/inspections.schemas");
+    const baseControl = { draftId: "d", vehicleId: "v", inspectionDate: "2026-11-12", inspectionTime: "10:00", leaderUserId: "u", responsibleUserIds: ["u"], items: [{ inventoryItemId: "i", observedQuantity: 1, result: "OK" }] };
+    assert(createInspectionSchema.safeParse({ ...baseControl, fluids: { oil: "OK", coolant: "ADDED", fuel: "THREE_QUARTERS" } }).success, "El control acepta los fluidos");
+    assert(!createInspectionSchema.safeParse({ ...baseControl, fluids: { oil: "OK", coolant: "OK", fuel: "EMPTY" } }).success, "Nivel de combustible inválido");
     const live = await call("/incidents/logistics", 201, officer, "POST", { ...lateBody, dispatchExceptionReason: "Sale con la sirena fallando: se usa bocina" });
     const briefing = await call("/incidents/logistics/briefing", 200, bombero);
     assert.equal(briefing.length, 1); assert.equal(briefing[0].vehicle, "5"); assert.equal(briefing[0].role, "Conductor");
-    assert.equal(briefing[0].notes[0].level, "critical", "Lo vencido va primero"); assert.match(briefing[0].notes[0].text, /VTV vencido/);
+    assert.equal(briefing[0].notes[0].level, "critical", "Lo vencido va primero"); assert(briefing[0].notes.some((n: { text: string; level: string }) => n.level === "critical" && /VTV vencido/.test(n.text)));
     assert(briefing[0].notes.some((n: { text: string }) => n.text === "Sirena con falso contacto"));
     assert(briefing[0].notes.some((n: { text: string; detail?: string }) => n.text === "Salió de forma excepcional" && n.detail?.includes("bocina")));
+    const texts = briefing[0].notes.map((n: { text: string }) => n.text);
+    for (const expected of ["Combustible en reserva", "Aceite de motor bajo", "Tubo autónomo ERA-T1 descargado (100 de 300 bar)", "Tubo autónomo ERA-T1: prueba hidráulica vencida", "Falta: Manguera 1\" (hay 1 de 2)", "Cambio de aceite vencido", "Líquido refrigerante: se completó en el último control"]) assert(texts.includes(expected), `El aviso detalla: ${expected} (vino: ${texts.join(" | ")})`);
+    assert.equal(briefing[0].fuelType, "Gasoil Súper");
+    assert(briefing[0].counts.critical >= 3, "Cuenta lo importante");
+    const levels = briefing[0].notes.map((n: { level: string }) => n.level); assert.deepEqual(levels, [...levels].sort((x: string, y: string) => ["critical", "warning", "info"].indexOf(x) - ["critical", "warning", "info"].indexOf(y)), "Ordenado por gravedad");
     assert.equal((await call("/incidents/logistics/briefing", 200, keeper)).length, 0, "Quien no salió no ve el aviso");
     // --- Corregir la dotación: agregar y quitar personas; el conductor debe estar habilitado ---
     await call(`/incidents/logistics/${live.id}/crew`, 403, officer, "PATCH", { userIds: [bomberoUser!.id, keeperUser!.id], driverUserId: keeperUser!.id, leaderUserId: bomberoUser!.id, reason: "Cambio de conductor" });
@@ -239,14 +258,15 @@ async function main() {
     const central = await prisma.station.create({ data: { name: "Cuartel con ubicación", latitude: -33.1, longitude: -64.7, radiusMeters: 80 } });
     const minutesAgo = (m: number) => new Date(Date.now() - m * 60000);
     const openStay = (checkIn: number, verified: number | null) => prisma.attendance.create({ data: { userId: keeperUser!.id, stationId: central.id, status: "OPEN", checkInAt: minutesAgo(checkIn), checkInTrust: "HIGH", lastPresenceConfirmedAt: verified === null ? null : minutesAgo(verified) } });
-    const stay1 = await openStay(180, 120);
+    const stay1 = await openStay(180, 100);
     const preview = await call("/attendance/me/close-remote", 200, keeper);
-    assert.equal(preview.open, true); assert(Math.abs(+new Date(preview.creditedUntil) - +minutesAgo(90)) < 5000, "Tope: última verificación + 30 min");
+    assert.equal(preview.open, true); assert(Math.abs(+new Date(preview.creditedUntil) - +minutesAgo(70)) < 5000, "Tope: última verificación + 30 min"); assert.equal(preview.late, false);
     await call("/attendance/me/close-remote", 400, keeper, "POST", { leftAt: new Date(Date.now() + 3600000).toISOString() });
     await call("/attendance/me/close-remote", 400, keeper, "POST", { leftAt: minutesAgo(240).toISOString() });
     await call("/attendance/me/close-remote", 403, guard, "POST", {});
-    const remote1 = await call("/attendance/me/close-remote", 200, keeper, "POST", { reason: "Me fui sin escanear" });
-    assert.equal(remote1.capped, true); assert.equal(remote1.method, "REMOTE"); assert(Math.abs(remote1.workedMinutes - 90) <= 1, "Acredita 1 h 30, no las 3 h");
+    // La huella del iPhone (user agent completo en base64) supera los 200 caracteres.
+    const remote1 = await call("/attendance/me/close-remote", 200, keeper, "POST", { reason: "Me fui sin escanear", deviceFingerprint: "x".repeat(400) });
+    assert.equal(remote1.capped, true); assert.equal(remote1.method, "REMOTE"); assert(Math.abs(remote1.workedMinutes - 110) <= 1, "Acredita 1 h 50, no las 3 h");
     assert.equal((await prisma.attendance.findUniqueOrThrow({ where: { id: stay1.id } })).checkOutMethod, "REMOTE");
     await openStay(60, null);
     const remote2 = await call("/attendance/me/close-remote", 200, keeper, "POST", { latitude: -33.1001, longitude: -64.7001, accuracy: 10 });
@@ -261,6 +281,32 @@ async function main() {
     await prisma.missionMovement.update({ where: { id: onMission.id }, data: { returnedAt: new Date(), returnWithoutArrivalReason: "Falsa salida de prueba" } });
     await call("/attendance/me/close-remote", 200, keeper, "POST", {});
     assert.equal((await prisma.attendance.findUniqueOrThrow({ where: { id: missionStay.id } })).status, "CLOSED");
+    // Base sin ubicación: misma regla. Se confirma presencia tocando el aviso y nunca se acredita más de lo verificado.
+    const noGps = await prisma.station.create({ data: { name: "Base sin ubicación prueba", latitude: 0, longitude: 0, radiusMeters: 100, requiresLocation: false } });
+    const noGpsQr = await prisma.qrChallenge.create({ data: { stationId: noGps.id, tokenHash: randomUUID(), expiresAt: new Date(Date.now() + 60000) } });
+    const tapStay = await prisma.attendance.create({ data: { userId: keeperUser!.id, stationId: noGps.id, checkInQrId: noGpsQr.id, status: "OPEN", checkInAt: minutesAgo(40), checkInTrust: "HIGH" } });
+    const tapState = await call("/members/presence", 200, keeper);
+    assert.equal(tapState.needsConfirmation, true, "La base sin ubicación también pide confirmar presencia"); assert.equal(tapState.attendance.requiresLocation, false);
+    await call("/members/presence", 400, keeper, "POST", { attendanceId: tapStay.id, inside: true, latitude: 0, longitude: 0, accuracy: 10, capturedAt: new Date().toISOString() });
+    await call("/members/presence", 200, keeper, "POST", { attendanceId: tapStay.id, inside: true, tap: true });
+    assert((await prisma.attendance.findUniqueOrThrow({ where: { id: tapStay.id } })).lastPresenceConfirmedAt, "La confirmación tocando cuenta como presencia verificada");
+    assert(await prisma.auditLog.findFirst({ where: { entityId: tapStay.id, action: "PRESENCE_CONFIRMED" } }));
+    await call("/attendance/me/close-remote", 400, keeper, "POST", { leftAt: new Date(Date.now() + 5 * 60000).toISOString() }); // hora futura
+    const tapClosed = await call("/attendance/me/close-remote", 200, keeper, "POST", {});
+    assert.equal(tapClosed.method, "REMOTE"); assert(tapClosed.workedMinutes >= 39, "Recién confirmado: cierra en el momento");
+    // Se fue a la casa y lo cierra horas después: solo se acredita el ingreso + 30 min y queda marcado como tardío.
+    const lateStay = await prisma.attendance.create({ data: { userId: keeperUser!.id, stationId: noGps.id, checkInQrId: noGpsQr.id, status: "OPEN", checkInAt: minutesAgo(8 * 60), checkInTrust: "HIGH" } });
+    assert.equal((await call("/attendance/me/close-remote", 200, keeper)).late, true);
+    const lateClose = await call("/attendance/me/close-remote", 200, keeper, "POST", { leftAt: minutesAgo(10).toISOString() });
+    assert.equal(lateClose.method, "REMOTE_LATE"); assert.equal(lateClose.capped, true); assert(Math.abs(lateClose.workedMinutes - 30) <= 1, "Acredita 30 min, no 8 h");
+    assert.equal((await prisma.attendance.findUniqueOrThrow({ where: { id: lateStay.id } })).checkOutMethod, "REMOTE_LATE");
+    assert(await prisma.memberNotification.findFirst({ where: { dedupeKey: { startsWith: `remote-close-late:${lateStay.id}:` } } }), "Se avisa a jefatura del cierre tardío");
+    // En la base con ubicación no alcanza con tocar: se exige el GPS.
+    const centralQr = await prisma.qrChallenge.create({ data: { stationId: central.id, tokenHash: randomUUID(), expiresAt: new Date(Date.now() + 60000) } });
+    const gpsStay = await prisma.attendance.create({ data: { userId: keeperUser!.id, stationId: central.id, checkInQrId: centralQr.id, status: "OPEN", checkInAt: minutesAgo(40), checkInTrust: "HIGH" } });
+    await call("/members/presence", 400, keeper, "POST", { attendanceId: gpsStay.id, inside: true, tap: true });
+    await call("/attendance/me/close-remote", 200, keeper, "POST", {});
+
     const monthly = await call(`/operations/reports/monthly?month=${new Date().toISOString().slice(0, 7)}`, 200, officer);
     assert((monthly.totals.remoteCloses ?? 0) >= 4, "El reporte muestra los cierres sin QR");
 

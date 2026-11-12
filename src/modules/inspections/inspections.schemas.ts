@@ -27,6 +27,12 @@ export const createInspectionSchema = z.object({
   inspectionTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Ingrese una hora valida"),
   observations: z.string().trim().max(10000).nullish(),
   sectionComments: z.array(z.object({ compartmentId: z.string().min(1).max(100), observations: z.string().trim().max(2000) })).max(100).default([]),
+  // Fluidos revisados en el control (opcional en la API por compatibilidad; la app los exige).
+  fluids: z.object({
+    oil: z.enum(["OK", "LOW", "ADDED"]),
+    coolant: z.enum(["OK", "LOW", "ADDED"]),
+    fuel: z.enum(["FULL", "THREE_QUARTERS", "HALF", "QUARTER", "RESERVE"]),
+  }).strict().optional(),
   leaderUserId: z.string().min(1),
   responsibleUserIds: z.array(z.string().min(1)).min(1),
   items: z.array(inspectionItemSchema).min(1),

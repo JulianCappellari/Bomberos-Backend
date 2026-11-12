@@ -142,7 +142,7 @@ export async function monthlyReport(month: string, actor: { userId: string; role
     if (!duration) continue;
     const row = people.get(attendance.userId) || { user: attendance.user, intervals: [], sessions: 0, openSessions: 0, remoteCloses: 0 };
     // Cierres sin QR: se acredito solo hasta la ultima presencia verificada; jefatura los ve en el reporte.
-    if (attendance.checkOutMethod === "REMOTE" || attendance.checkOutMethod === "REMOTE_GPS") row.remoteCloses++;
+    if (attendance.checkOutMethod?.startsWith("REMOTE")) row.remoteCloses++;
     row.intervals.push({ start: Math.max(attendance.checkInAt.getTime(), bounds.start.getTime()), end: Math.min(end.getTime(), bounds.end.getTime()) });
     row.sessions++;
     if (attendance.status === "OPEN") row.openSessions++;

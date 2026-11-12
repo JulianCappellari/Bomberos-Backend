@@ -700,6 +700,8 @@ model Vehicle {
   year                 Int?
   mileage              Int?
   nextOilChangeMileage Int?
+  // Combustible que carga la unidad (ej. "Gasoil Súper"); se muestra en el control de fluidos.
+  fuelType             String?  @db.VarChar(60)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -762,6 +764,10 @@ model Inspection {
   inspectionDate   DateTime
   inspectionTime   String?    @db.VarChar(5)
   observations     String?    @db.Text
+  // Fluidos revisados en el control: OK | LOW | ADDED (aceite, refrigerante) y FULL | THREE_QUARTERS | HALF | QUARTER | RESERVE (combustible).
+  oilLevel         String?    @db.VarChar(20)
+  coolantLevel     String?    @db.VarChar(20)
+  fuelLevel        String?    @db.VarChar(20)
   leaderUserId     String?
   createdByUserId  String?
   resultingAssetStatus AssetStatus?
@@ -1653,7 +1659,7 @@ model Attendance {
   
   checkInTrust  AttendanceTrustLevel?
   checkOutTrust AttendanceTrustLevel?
-  // Como se cerro: QR, REMOTE (a distancia, con tope verificado) o REMOTE_GPS (sin QR, con GPS en el cuartel).
+  // Como se cerro: QR, REMOTE (a distancia, con tope verificado), REMOTE_LATE (a distancia, mas de 2 h despues de la ultima presencia) o REMOTE_GPS (sin QR, con GPS en el cuartel).
   checkOutMethod String? @db.VarChar(20)
 
   checkInLatitude   Float?

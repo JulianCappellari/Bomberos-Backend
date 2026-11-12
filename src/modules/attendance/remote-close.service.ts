@@ -15,11 +15,14 @@ import { getDistanceMeters } from "./attendance.utils";
 // Si el GPS confirma que la persona sigue en el cuartel, se cierra en el momento, como con el QR.
 export const REMOTE_GRACE_MINUTES = 30;
 const REPEAT_ALERT_EVERY = 3;
+// Cerrar a distancia mucho despues de la ultima presencia verificada queda marcado como tardio (confianza baja) y se avisa a jefatura.
+export const LATE_CLOSE_HOURS = 2;
 
 export const remoteCloseSchema = z.object({
   leftAt: z.string().datetime({ offset: true }).optional(),
   reason: z.string().trim().max(300).optional(),
-  deviceFingerprint: z.string().min(1).max(200).optional(),
+  // La huella del dispositivo incluye el user agent completo (en iPhone supera los 200 caracteres).
+  deviceFingerprint: z.string().min(1).max(2000).optional(),
   latitude: z.number().finite().min(-90).max(90).optional(),
   longitude: z.number().finite().min(-180).max(180).optional(),
   accuracy: z.number().finite().min(0).max(5000).optional(),
@@ -31,8 +34,7 @@ function verifiedUntil(row: OpenRow) {
   return [row.checkInAt, row.lastPresenceConfirmedAt, row.presenceResumeAt].filter((d): d is Date => Boolean(d)).sort((a, b) => +b - +a)[0] ?? new Date();
 }
 function capFor(row: OpenRow, now: Date) {
-  // Base sin ubicacion: no hay como verificar presencia; se acepta la hora declarada (hasta ahora) y queda marcada.
-  if (!row.station.requiresLocation) return now;
+  // Misma regla en todas las bases: en la base sin ubicacion la presencia se confirma tocando el aviso cada 30 minutos.
   const cap = new Date(+verifiedUntil(row) + REMOTE_GRACE_MINUTES * 60000);
   return cap < now ? cap : now;
 }
@@ -47,7 +49,7 @@ export async function remoteClosePreview(userId: string) {
   if (!row) return { open: false as const };
   const now = new Date();
   const onMission = Boolean(await prisma.missionCrew.findFirst({ where: { userId, movement: { returnedAt: null } }, select: { movementId: true } }));
-  return { open: true as const, attendanceId: row.id, station: row.station.name, requiresLocation: row.station.requiresLocation, checkInAt: row.checkInAt, verifiedUntil: verifiedUntil(row), creditedUntil: capFor(row, now), graceMinutes: REMOTE_GRACE_MINUTES, onMission };
+  return { open: true as const, attendanceId: row.id, station: row.station.name, requiresLocation: row.station.requiresLocation, checkInAt: row.checkInAt, verifiedUntil: verifiedUntil(row), creditedUntil: capFor(row, now), graceMinutes: REMOTE_GRACE_MINUTES, late: +now - +verifiedUntil(row) > LATE_CLOSE_HOURS * 3_600_000, lateHours: LATE_CLOSE_HOURS, now, onMission };
 }
 
 export async function closeRemotely(actor: { userId: string; role: string }, input: z.infer<typeof remoteCloseSchema>) {
@@ -70,7 +72,8 @@ export async function closeRemotely(actor: { userId: string; role: string }, inp
     if (requested && requested < row.checkInAt) throw new OperationError(400, "La hora de salida no puede ser anterior a tu ingreso");
     const credited = requested && requested < cap ? requested : cap;
     const capped = Boolean(requested && requested > cap) || (!requested && !gpsInside && cap < now);
-    const method = gpsInside ? "REMOTE_GPS" : "REMOTE";
+    const late = !gpsInside && +now - +verifiedUntil(row) > LATE_CLOSE_HOURS * 3_600_000;
+    const method = gpsInside ? "REMOTE_GPS" : late ? "REMOTE_LATE" : "REMOTE";
     const workedMinutes = Math.max(0, Math.floor((+credited - +row.checkInAt) / 60000));
     await tx.attendance.update({ where: { id: row.id }, data: {
       status: "CLOSED", checkOutAt: credited, workedMinutes, checkOutTrust: "MEDIUM", checkOutMethod: method,
@@ -78,17 +81,23 @@ export async function closeRemotely(actor: { userId: string; role: string }, inp
     } });
     await tx.attendanceRecord.create({ data: { userId: actor.userId, type: "EXIT", method: "MANUAL", notes: gpsInside ? `Salida sin QR confirmada por GPS en ${row.station.name}` : `Salida cerrada a distancia${input.reason ? `: ${input.reason}` : ""}` } });
     await tx.auditLog.create({ data: { actorUserId: actor.userId, action: "ATTENDANCE_CLOSED_REMOTELY", entityType: "Attendance", entityId: row.id, metadata: {
-      method, creditedUntil: credited.toISOString(), requestedLeftAt: requested?.toISOString() ?? null, verifiedUntil: verifiedUntil(row).toISOString(), capped, gpsInside, distanceMeters: distance, reason: input.reason ?? null, recordedAt: now.toISOString(),
+      method, creditedUntil: credited.toISOString(), requestedLeftAt: requested?.toISOString() ?? null, verifiedUntil: verifiedUntil(row).toISOString(), capped, gpsInside, distanceMeters: distance, reason: input.reason ?? null, late, recordedAt: now.toISOString(),
     } } });
     if (typeof input.latitude === "number" && typeof input.longitude === "number") await recordGpsSuspicion(tx, actor.userId, row.id, "Cierre de permanencia sin QR", gpsSuspicionReasons({ latitude: input.latitude, longitude: input.longitude, accuracy: input.accuracy }));
     // Aviso a jefatura cuando alguien cierra a distancia de forma repetida (3, 6, 9… en el mes).
     const month = stationDate().slice(0, 7);
-    const count = await tx.attendance.count({ where: { userId: actor.userId, checkOutMethod: { in: ["REMOTE", "REMOTE_GPS"] }, checkOutAt: { gte: new Date(`${month}-01T03:00:00Z`) } } });
-    if (count >= REPEAT_ALERT_EVERY && count % REPEAT_ALERT_EVERY === 0) {
-      const person = await tx.user.findUnique({ where: { id: actor.userId }, select: { username: true, profile: { select: { fullName: true } } } });
-      const recipients = (await commandUserIds(tx, actor.userId));
-      await tx.memberNotification.createMany({ data: recipients.map((userId) => ({ userId, dedupeKey: `remote-close:${actor.userId}:${month}:${count}:${userId}`, title: `Cierres de asistencia sin QR: ${person?.profile?.fullName || person?.username}`, href: "/reports", body: `Lleva ${count} cierres a distancia este mes. Se acredita solo hasta la última presencia verificada; conviene recordarle escanear el QR al irse.` })), skipDuplicates: true });
+    const count = await tx.attendance.count({ where: { userId: actor.userId, checkOutMethod: { in: ["REMOTE", "REMOTE_GPS", "REMOTE_LATE"] }, checkOutAt: { gte: new Date(`${month}-01T03:00:00Z`) } } });
+    const person = await tx.user.findUnique({ where: { id: actor.userId }, select: { username: true, profile: { select: { fullName: true } } } });
+    const name = person?.profile?.fullName || person?.username;
+    if (late) {
+      const recipients = await commandUserIds(tx, actor.userId);
+      const hours = Math.floor((+now - +verifiedUntil(row)) / 3_600_000);
+      await tx.memberNotification.createMany({ data: recipients.map((userId) => ({ userId, dedupeKey: `remote-close-late:${row.id}:${userId}`, title: `Cierre de asistencia tardío: ${name}`, href: "/reports", body: `Cerró su permanencia sin QR ${hours} h después de su última presencia verificada. Se acreditó solo hasta las ${credited.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })}.` })), skipDuplicates: true });
     }
-    return { attendanceId: row.id, method, creditedUntil: credited, workedMinutes, capped, gpsInside, remoteClosesThisMonth: count };
+    if (count >= REPEAT_ALERT_EVERY && count % REPEAT_ALERT_EVERY === 0) {
+      const recipients = (await commandUserIds(tx, actor.userId));
+      await tx.memberNotification.createMany({ data: recipients.map((userId) => ({ userId, dedupeKey: `remote-close:${actor.userId}:${month}:${count}:${userId}`, title: `Cierres de asistencia sin QR: ${name}`, href: "/reports", body: `Lleva ${count} cierres a distancia este mes. Se acredita solo hasta la última presencia verificada; conviene recordarle escanear el QR al irse.` })), skipDuplicates: true });
+    }
+    return { attendanceId: row.id, method, creditedUntil: credited, workedMinutes, capped, gpsInside, late, remoteClosesThisMonth: count };
   });
 }

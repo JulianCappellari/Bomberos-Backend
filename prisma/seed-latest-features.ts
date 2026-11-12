@@ -152,5 +152,25 @@ export async function seedLatestFeatures(tx: Prisma.TransactionClient, passwordH
       classifications: classes, classificationDetail: classes.includes("OTROS") ? "Garrafa" : "", firefightersOnScene: index === 0 ? "[DEMO] Bomberos Voluntarios de Río Cuarto, móvil 12" : "",
     } });
   }
+  // ---------------------------------------------------------------------------
+  // 7. Novedades del movil en salida: combustible, fluidos del ultimo control, ERA con poca carga y una falla.
+  // ---------------------------------------------------------------------------
+  await tx.vehicle.updateMany({ where: { id: { startsWith: id("vehicle_") }, fuelType: null }, data: { fuelType: "Gasoil Súper" } });
+  const fluidsByVehicle: Record<number, { oilLevel: string; coolantLevel: string; fuelLevel: string }> = {
+    0: { oilLevel: "LOW", coolantLevel: "OK", fuelLevel: "QUARTER" }, 1: { oilLevel: "OK", coolantLevel: "OK", fuelLevel: "FULL" }, 2: { oilLevel: "OK", coolantLevel: "ADDED", fuelLevel: "THREE_QUARTERS" },
+    3: { oilLevel: "OK", coolantLevel: "OK", fuelLevel: "HALF" }, 4: { oilLevel: "OK", coolantLevel: "OK", fuelLevel: "FULL" }, 5: { oilLevel: "OK", coolantLevel: "OK", fuelLevel: "RESERVE" },
+  };
+  for (const [index, fluids] of Object.entries(fluidsByVehicle)) {
+    const last = await tx.inspection.findFirst({ where: { vehicleId: id(`vehicle_${index}`), voidedAt: null }, orderBy: [{ inspectionDate: "desc" }, { createdAt: "desc" }], select: { id: true, fuelLevel: true } });
+    if (last && !last.fuelLevel) await tx.inspection.update({ where: { id: last.id }, data: fluids });
+  }
+  await tx.asset.upsert({ where: { id: lf("era_low_asset") }, update: {}, create: { id: lf("era_low_asset"), name: "[DEMO] Cilindro ERA 6.8L de reserva", assetType: "PPE", status: "OPERATIONAL" } });
+  await tx.airCylinder.upsert({ where: { id: lf("era_low") }, update: {}, create: { id: lf("era_low"), assetId: lf("era_low_asset"), code: "ERA-300-R", serialNumber: "SN-DEMO-RESERVA-01", ratedPressureBar: 300, pressureBar: 110, vehicleAssetId: id("asset_0"), reviewedAt: day(-3), lastEventAt: day(-3), createdAt: day(-90) } });
+  await tx.airHydroTest.upsert({ where: { id: lf("era_low_hydro") }, update: {}, create: { id: lf("era_low_hydro"), cylinderId: lf("era_low"), result: "PASS", testedOn: day(-200), validUntil: day(900), certificateReference: "PH-DEMO-RESERVA-01", notes: "[DEMO] Prueba hidráulica aprobada", registeredByUserId: id("admin") } });
+  await tx.maintenanceJob.upsert({ where: { id: lf("maintenance_brakes") }, update: {}, create: {
+    id: lf("maintenance_brakes"), assetId: id("asset_0"), title: "Posible falla en los frenos", description: "[DEMO] Pedal largo al frenar en bajada. Revisar pastillas y nivel de líquido de frenos.",
+    status: "OPEN", blocksOperation: false, createdByUserId: id("guardia"), createdAt: at(-1, 18),
+  } });
+
   return { guardAccounts: 2, supplyItems: items.length, materialRequests: requests.length, polls: 2, sheetsCompleted: sheets.length };
 }

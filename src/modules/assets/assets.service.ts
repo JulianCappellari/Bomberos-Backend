@@ -27,6 +27,7 @@ export async function createAsset(data: {
     year?: number;
     mileage?: number;
     nextOilChangeMileage?: number;
+    fuelType?: string | null;
   };
   actorUserId?: string;
 }) {
@@ -73,6 +74,7 @@ export async function createAsset(data: {
                 year: data.vehicle?.year,
                 mileage: data.vehicle?.mileage,
                 nextOilChangeMileage: data.vehicle?.nextOilChangeMileage,
+                fuelType: normalizeNullable(data.vehicle?.fuelType),
               },
             }
           : undefined,
@@ -296,6 +298,7 @@ export async function upsertVehicleData(
     year?: number;
     mileage?: number;
     nextOilChangeMileage?: number;
+    fuelType?: string | null;
   },
   actorUserId?: string,
 ) {
@@ -363,6 +366,7 @@ export async function upsertVehicleData(
           year: data.year,
           mileage: data.mileage,
           nextOilChangeMileage: data.nextOilChangeMileage,
+          fuelType: data.fuelType === undefined ? undefined : normalizeNullable(data.fuelType),
         },
       })
     : await prisma.vehicle.create({
@@ -375,6 +379,7 @@ export async function upsertVehicleData(
           year: data.year,
           mileage: data.mileage,
           nextOilChangeMileage: data.nextOilChangeMileage,
+          fuelType: normalizeNullable(data.fuelType),
         },
       });
 

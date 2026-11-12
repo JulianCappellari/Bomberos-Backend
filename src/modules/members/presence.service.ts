@@ -13,8 +13,10 @@ const GRACE = 15 * 60000;
 function windowTimes(shown: Date) {
   return { retryAt: new Date(+shown + GRACE), expiresAt: new Date(+shown + 2 * GRACE) };
 }
-export const presenceSchema = z.discriminatedUnion("inside", [
+export const presenceSchema = z.union([
   z.object({ attendanceId: z.string().min(1), inside: z.literal(false) }).strict(),
+  // Base sin ubicacion: se confirma tocando el aviso (no hay GPS que comparar).
+  z.object({ attendanceId: z.string().min(1), inside: z.literal(true), tap: z.literal(true) }).strict(),
   z.object({ attendanceId: z.string().min(1), inside: z.literal(true), latitude: z.number().finite().min(-90).max(90), longitude: z.number().finite().min(-180).max(180), accuracy: z.number().finite().min(0).max(50), capturedAt: z.string().datetime({ offset: true }) }).strict(),
 ]);
 export function presenceDueAt(row: { checkInAt: Date | null; lastPresenceConfirmedAt?: Date | null; presenceResumeAt?: Date | null }) {
@@ -41,12 +43,12 @@ export async function presenceState(userId: string) {
   return prisma.$transaction(async tx => {
   const row = await tx.attendance.findFirst({ where: { userId, status: "OPEN", checkInQrId: { not: null }, checkInAt: { lte: new Date() }, checkInTrust: { not: "REJECTED" } }, orderBy: { checkInAt: "desc" }, select: { id: true, checkInAt: true, lastPresenceConfirmedAt: true, presenceResumeAt: true, promptShownAt: true, promptDueAt: true, station: { select: { name: true, requiresLocation: true } } } });
   if (!row) return { attendance: null, dueAt: null, needsConfirmation: false };
-  // La base sin ubicacion no pide confirmar presencia con GPS.
-  if (!row.station.requiresLocation) return { attendance: { id: row.id, stationName: row.station.name }, dueAt: null, needsConfirmation: false };
+  // La base sin ubicacion tambien pide confirmar presencia cada 30 minutos, tocando el aviso (sin GPS).
+  const requiresLocation = row.station.requiresLocation;
   const mission = await tx.missionCrew.findFirst({where:{userId,movement:{returnedAt:null}},select:{movementId:true}});
-  if(mission)return {attendance:{id:row.id,stationName:row.station.name},dueAt:null,needsConfirmation:false,suspendedForMission:mission.movementId};
+  if(mission)return {attendance:{id:row.id,stationName:row.station.name,requiresLocation},dueAt:null,needsConfirmation:false,suspendedForMission:mission.movementId};
   const { dueAt, guardUntil } = await effectivePresenceDue(tx, userId, row);
-  return { attendance: { id: row.id, stationName: row.station.name }, dueAt, guardUntil, needsConfirmation: Boolean(dueAt && dueAt <= new Date()), ...(row.promptShownAt && row.promptDueAt?.getTime() === dueAt?.getTime() ? windowTimes(row.promptShownAt) : {}) };
+  return { attendance: { id: row.id, stationName: row.station.name, requiresLocation }, dueAt, guardUntil, needsConfirmation: Boolean(dueAt && dueAt <= new Date()), ...(row.promptShownAt && row.promptDueAt?.getTime() === dueAt?.getTime() ? windowTimes(row.promptShownAt) : {}) };
   }, { isolationLevel: "RepeatableRead" });
 }
 export async function markPromptShown(userId: string, attendanceId: string, expectedDue: string) {
@@ -96,11 +98,16 @@ export async function confirmPresence(input: z.infer<typeof presenceSchema>, use
       const { dueAt } = await effectivePresenceDue(tx, userId, row);
       if (!dueAt) throw new OperationError(409, "Permanencia sin hora de ingreso valida");
       if (dueAt > now) throw new OperationError(409, "La presencia ya fue confirmada recientemente");
-      assertPresenceLocation(input, row.station, now);
-      await recordGpsSuspicion(tx, userId, row.id, "Revalidación de presencia", gpsSuspicionReasons(input, { latitude: row.checkInLatitude, longitude: row.checkInLongitude }));
+      if ("tap" in input) {
+        if (row.station.requiresLocation) throw new OperationError(400, "En esta base la presencia se confirma con la ubicación");
+      } else {
+        if (!row.station.requiresLocation) throw new OperationError(400, "En esta base la presencia se confirma tocando el aviso");
+        assertPresenceLocation(input, row.station, now);
+        await recordGpsSuspicion(tx, userId, row.id, "Revalidación de presencia", gpsSuspicionReasons(input, { latitude: row.checkInLatitude, longitude: row.checkInLongitude }));
+      }
       await tx.attendance.update({ where: { id: row.id }, data: { lastPresenceConfirmedAt: now, promptShownAt:null, promptDueAt:null } });
     }
-    await tx.auditLog.create({ data: { actorUserId: userId, action: input.inside ? "PRESENCE_CONFIRMED" : "PRESENCE_EXIT_DECLARED", entityType: "Attendance", entityId: row.id } });
+    await tx.auditLog.create({ data: { actorUserId: userId, action: input.inside ? "PRESENCE_CONFIRMED" : "PRESENCE_EXIT_DECLARED", entityType: "Attendance", entityId: row.id, ...(input.inside && "tap" in input ? { metadata: { method: "TAP", reason: "Base sin ubicación" } } : {}) } });
     return { message: input.inside ? "Presencia confirmada por 30 minutos" : "Permanencia cerrada" };
   });
 }

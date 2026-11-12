@@ -9,6 +9,7 @@ const vehicleSchema = z.object({
   year: z.number().int().optional(),
   mileage: z.number().int().min(0).optional(),
   nextOilChangeMileage: z.number().int().min(0).optional(),
+  fuelType: z.string().trim().max(60).optional().nullable(),
 });
 
 export const createAssetSchema = z.object({
@@ -36,4 +37,5 @@ export const upsertVehicleDataSchema = z.object({
   year: z.number().int().optional(),
   mileage: z.number().int().min(0).optional(),
   nextOilChangeMileage: z.number().int().min(0).optional(),
+  fuelType: z.string().trim().max(60).optional().nullable(),
 });
