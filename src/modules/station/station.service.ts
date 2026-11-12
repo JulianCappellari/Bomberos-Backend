@@ -18,7 +18,7 @@ const nameOf = (u: { username: string; profile: { fullName: string } | null }) =
 /* ------------------------------------------------------------------ */
 export const EVENT_KINDS = ["TRAINING", "MEETING", "EVENT", "OTHER"] as const;
 const eventLabel: Record<string, string> = { TRAINING: "Capacitación", MEETING: "Reunión", EVENT: "Evento", OTHER: "Actividad" };
-const when = (d: Date) => new Intl.DateTimeFormat("es-AR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" }).format(d);
+const when = (d: Date) => new Intl.DateTimeFormat("es-AR", { hourCycle: "h23", weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" }).format(d);
 
 export async function listEvents(actor: Actor, scope: "upcoming" | "past") {
   const now = new Date();

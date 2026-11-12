@@ -81,7 +81,7 @@ export async function expirePresence(id: string, now = new Date()) {
     const changed = await tx.attendance.updateMany({where:{id,status:"OPEN"},data:{status:"CLOSED",checkOutAt:credited,checkOutTrust:"MEDIUM",checkOutMethod:"PRESENCE_TIMEOUT",workedMinutes,promptDueAt:null,promptShownAt:null}});
     if (!changed.count) return false;
     await tx.auditLog.create({data:{action:"SYSTEM_PRESENCE_TIMED_OUT",entityType:"Attendance",entityId:id,metadata:{userId:row.userId,dueAt:dueAt.toISOString(),closedAt:now.toISOString(),creditedUntil:credited.toISOString(),workedMinutes,discarded:false,reason:"Sin confirmación de presencia en 30 minutos: se acredita solo lo verificado"}}});
-    const until = credited.toLocaleTimeString("es-AR",{hour:"2-digit",minute:"2-digit",timeZone:"America/Argentina/Buenos_Aires"});
+    const until = credited.toLocaleTimeString("es-AR",{ hourCycle: "h23",hour:"2-digit",minute:"2-digit",timeZone:"America/Argentina/Buenos_Aires"});
     await notify(tx,[row.userId],"Permanencia cerrada: no confirmaste tu presencia","/attendance",`Se acreditó hasta las ${until} (tu última presencia verificada). Si seguís en ${row.station.name}, escaneá el QR para volver a ingresar.`);
     return true;
   });

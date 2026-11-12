@@ -11,8 +11,9 @@ import { sanitizeTaskPhotos } from "../work/work-photos";
 // Novedades publicas: lo ve cualquier persona sin iniciar sesion (comunidad y medios). Capacitaciones, noticias y,
 // sobre todo, el informe de un incidente ya finalizado. Lo redacta y publica jefatura; nunca incluye datos personales.
 export const POST_KINDS = ["INCIDENT", "TRAINING", "NEWS"] as const;
+const AGENCY_LABEL: Record<string, string> = { FIRE_STATION: "Bomberos", POLICE: "Policía", MEDICAL: "Servicio de emergencias médicas", CIVIL_DEFENSE: "Defensa Civil", UTILITY: "Servicio público", MUNICIPAL: "Municipalidad", OTHER: "Institución" };
 const TYPE_LABEL: Record<string, string> = { FIRE: "Incendio", RESCUE: "Rescate", ACCIDENT: "Accidente", CHEMICAL: "Materiales peligrosos", MEDICAL: "Asistencia", FLOOD: "Inundación", OTHER: "Intervención" };
-const publicSelect = { id: true, kind: true, title: true, summary: true, body: true, happenedOn: true, publishedAt: true, photos: { orderBy: { position: "asc" as const }, select: { id: true } } } as const;
+const publicSelect = { id: true, kind: true, title: true, summary: true, body: true, happenedOn: true, publishedAt: true, units: true, peopleCount: true, agencies: true, photos: { orderBy: { position: "asc" as const }, select: { id: true } } } as const;
 
 const postSchema = z.object({
   kind: z.enum(POST_KINDS),
@@ -21,6 +22,10 @@ const postSchema = z.object({
   body: z.string().trim().min(10).max(20000),
   incidentId: z.string().min(1).max(100).nullable().optional(),
   happenedOn: z.string().date().nullable().optional(),
+  // Moviles que salieron, personas que fueron y otras instituciones que participaron (se muestran como ficha del informe).
+  units: z.array(z.string().trim().min(1).max(40)).max(20).default([]),
+  peopleCount: z.number().int().min(0).max(500).nullable().optional(),
+  agencies: z.array(z.string().trim().min(2).max(200)).max(20).default([]),
   photos: z.array(z.string().min(1)).max(6).optional(),
   keepPhotoIds: z.array(z.string().min(1).max(100)).max(6).optional(),
 }).strict();
@@ -62,25 +67,31 @@ postsAdminRouter.get("/", async (_req, res) => {
 });
 // Borrador del informe a partir de una intervencion finalizada: solo datos generales, sin nombres ni telefonos.
 postsAdminRouter.get("/incident-draft/:incidentId", async (req, res) => {
-  const incident = await prisma.incident.findUnique({ where: { id: String(req.params.incidentId) }, include: { movements: { select: { asset: { select: { name: true, vehicle: { select: { unitNumber: true } } } }, departedAt: true, returnedAt: true } }, agencies: { select: { name: true } } } });
+  const incident = await prisma.incident.findUnique({ where: { id: String(req.params.incidentId) }, include: {
+    movements: { where: { OR: [{ departureId: null }, { departure: { is: { voidedAt: null } } }] }, select: { asset: { select: { name: true, vehicle: { select: { unitNumber: true } } } }, departedAt: true, returnedAt: true, crew: { select: { userId: true } } } },
+    agencies: { where: { voidedAt: null }, select: { agencyType: true, name: true, unit: true, inCharge: true } },
+  } });
   if (!incident || incident.voidedAt) throw new OperationError(404, "Intervención no encontrada");
   if (incident.status !== "CLOSED") throw new OperationError(409, "Solo se informa públicamente una intervención finalizada");
   const kind = TYPE_LABEL[incident.type] ?? "Intervención";
   const units = [...new Set(incident.movements.map((m) => m.asset.vehicle?.unitNumber ?? m.asset.name))];
+  const peopleCount = new Set(incident.movements.flatMap((m) => m.crew.map((c) => c.userId))).size;
   const from = incident.occurredAt, to = incident.closedAt ?? incident.updatedAt;
   const minutes = Math.max(0, Math.round((+to - +from) / 60000));
-  const hm = (d: Date) => d.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" });
-  const agencies = [...new Set(incident.agencies.map((a) => a.name).filter(Boolean))];
+  const hm = (d: Date) => d.toLocaleTimeString("es-AR", { hourCycle: "h23", hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" });
+  // Otras instituciones y quien estuvo a cargo de cada una.
+  const agencies = [...new Set(incident.agencies.map((a) => [`${AGENCY_LABEL[a.agencyType] ?? "Institución"}: ${a.name}`, a.unit && `unidad ${a.unit}`, a.inCharge && `a cargo de ${a.inCharge}`].filter(Boolean).join(", ")))];
   const body = [
     `${kind} atendido por Bomberos Voluntarios de Sampacho.`,
     `Lugar: ${incident.location}.`,
     `Aviso: ${from.toLocaleDateString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" })} a las ${hm(from)}. Finalización: ${hm(to)} (${minutes >= 60 ? `${Math.floor(minutes / 60)} h ${minutes % 60} min` : `${minutes} min`} de trabajo).`,
-    units.length ? `Unidades intervinientes: ${units.join(", ")}.` : "",
-    agencies.length ? `Trabajó en conjunto con: ${agencies.join(", ")}.` : "",
+    units.length ? `${units.length === 1 ? "Móvil que salió" : "Móviles que salieron"}: ${units.join(", ")}.` : "",
+    peopleCount ? `Personal que fue al lugar: ${peopleCount} ${peopleCount === 1 ? "bombero" : "bomberos"}.` : "",
+    agencies.length ? `También participaron: ${agencies.join("; ")}.` : "No participaron otras instituciones.",
     incident.closingReport ? `\n${incident.closingReport}` : "",
     "\nRevisá el texto antes de publicar: no incluyas nombres, teléfonos ni datos de personas asistidas.",
   ].filter(Boolean).join("\n");
-  res.json({ kind: "INCIDENT", incidentId: incident.id, title: `${kind} en ${incident.location}`.slice(0, 160), summary: `${kind} en ${incident.location}. ${units.length ? `Intervinieron ${units.length === 1 ? "la unidad" : "las unidades"} ${units.join(", ")}.` : ""}`.trim().slice(0, 400), body, happenedOn: from.toISOString().slice(0, 10) });
+  res.json({ kind: "INCIDENT", incidentId: incident.id, title: `${kind} en ${incident.location}`.slice(0, 160), summary: `${kind} en ${incident.location}. ${units.length ? `Intervinieron ${units.length === 1 ? "la unidad" : "las unidades"} ${units.join(", ")}.` : ""}`.trim().slice(0, 400), body, happenedOn: from.toISOString().slice(0, 10), units, peopleCount, agencies });
 });
 postsAdminRouter.post("/", async (req, res) => {
   const input = postSchema.parse(req.body);
@@ -90,7 +101,7 @@ postsAdminRouter.post("/", async (req, res) => {
     if (!incident || incident.voidedAt || incident.status !== "CLOSED") throw new OperationError(409, "Solo se informa públicamente una intervención finalizada");
   }
   const row = await serializable(async (tx) => {
-    const created = await tx.publicPost.create({ data: { kind: input.kind, title: input.title, summary: input.summary, body: input.body, incidentId: input.incidentId ?? null, happenedOn: input.happenedOn ? new Date(input.happenedOn) : null, authorUserId: req.user!.userId, photos: { create: photos.map((p, position) => ({ bytes: p.bytes, sha256: p.sha256, position })) } }, select: { id: true } });
+    const created = await tx.publicPost.create({ data: { kind: input.kind, title: input.title, summary: input.summary, body: input.body, units: input.units, peopleCount: input.peopleCount ?? null, agencies: input.agencies, incidentId: input.incidentId ?? null, happenedOn: input.happenedOn ? new Date(input.happenedOn) : null, authorUserId: req.user!.userId, photos: { create: photos.map((p, position) => ({ bytes: p.bytes, sha256: p.sha256, position })) } }, select: { id: true } });
     await tx.auditLog.create({ data: { actorUserId: req.user!.userId, action: "PUBLIC_POST_CREATED", entityType: "PublicPost", entityId: created.id, metadata: { kind: input.kind, title: input.title, photos: photos.length } } });
     return created;
   });
@@ -106,7 +117,7 @@ postsAdminRouter.put("/:id", async (req, res) => {
     const keep = new Set(input.keepPhotoIds ?? current.photos.map((p) => p.id));
     if (keep.size + photos.length > 6) throw new OperationError(400, "Hasta 6 fotos por publicación");
     await tx.publicPostPhoto.deleteMany({ where: { postId: id, id: { notIn: [...keep] } } });
-    await tx.publicPost.update({ where: { id }, data: { kind: input.kind, title: input.title, summary: input.summary, body: input.body, happenedOn: input.happenedOn ? new Date(input.happenedOn) : null, revision: { increment: 1 }, photos: { create: photos.map((p, i) => ({ bytes: p.bytes, sha256: p.sha256, position: keep.size + i })) } } });
+    await tx.publicPost.update({ where: { id }, data: { kind: input.kind, title: input.title, summary: input.summary, body: input.body, units: input.units, peopleCount: input.peopleCount ?? null, agencies: input.agencies, happenedOn: input.happenedOn ? new Date(input.happenedOn) : null, revision: { increment: 1 }, photos: { create: photos.map((p, i) => ({ bytes: p.bytes, sha256: p.sha256, position: keep.size + i })) } } });
     await tx.auditLog.create({ data: { actorUserId: req.user!.userId, action: "PUBLIC_POST_UPDATED", entityType: "PublicPost", entityId: id, metadata: { title: input.title, published: current.status === "PUBLISHED" } } });
   });
   res.json({ id });

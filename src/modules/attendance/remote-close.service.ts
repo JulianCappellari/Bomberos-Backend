@@ -92,7 +92,7 @@ export async function closeRemotely(actor: { userId: string; role: string }, inp
     if (late) {
       const recipients = await commandUserIds(tx, actor.userId);
       const hours = Math.floor((+now - +verifiedUntil(row)) / 3_600_000);
-      await tx.memberNotification.createMany({ data: recipients.map((userId) => ({ userId, dedupeKey: `remote-close-late:${row.id}:${userId}`, title: `Cierre de asistencia tardío: ${name}`, href: "/reports", body: `Cerró su permanencia sin QR ${hours} h después de su última presencia verificada. Se acreditó solo hasta las ${credited.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })}.` })), skipDuplicates: true });
+      await tx.memberNotification.createMany({ data: recipients.map((userId) => ({ userId, dedupeKey: `remote-close-late:${row.id}:${userId}`, title: `Cierre de asistencia tardío: ${name}`, href: "/reports", body: `Cerró su permanencia sin QR ${hours} h después de su última presencia verificada. Se acreditó solo hasta las ${credited.toLocaleTimeString("es-AR", { hourCycle: "h23", hour: "2-digit", minute: "2-digit", timeZone: "America/Argentina/Buenos_Aires" })}.` })), skipDuplicates: true });
     }
     if (count >= REPEAT_ALERT_EVERY && count % REPEAT_ALERT_EVERY === 0) {
       const recipients = (await commandUserIds(tx, actor.userId));

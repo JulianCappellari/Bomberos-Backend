@@ -2001,6 +2001,10 @@ model PublicPost {
   body         String            @db.Text
   incidentId   String?
   happenedOn   DateTime?         @db.Date
+  // Datos del informe para la comunidad: moviles que salieron, personas que fueron y otras instituciones.
+  units        String[]          @default([])
+  peopleCount  Int?
+  agencies     String[]          @default([])
   status       String            @default("DRAFT") @db.VarChar(12)
   publishedAt  DateTime?
   authorUserId String

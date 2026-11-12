@@ -22,7 +22,7 @@ const form = z.object({
 }).strict();
 
 export async function incidentSheetContext(tx:Prisma.TransactionClient,id:string,until:Date){
-  const incident=await tx.incident.findUnique({where:{id},select:{id:true,requestYear:true,requestNumber:true,title:true,type:true,description:true,location:true,occurredAt:true,closedAt:true,status:true,voidedAt:true,voidReason:true,replacesIncidentId:true,
+  const incident=await tx.incident.findUnique({where:{id},select:{id:true,requestYear:true,requestNumber:true,title:true,type:true,description:true,location:true,occurredAt:true,closedAt:true,closingReport:true,closedBy:{select:{username:true,profile:{select:{fullName:true,rank:true}}}},status:true,voidedAt:true,voidReason:true,replacesIncidentId:true,
     alert:{select:{id:true,createdAt:true,contactPhone:true,createdBy:{select:{username:true,profile:{select:{fullName:true}}}},originNotice:{select:{source:true,phone:true,receivedAt:true}},responses:{where:{response:"GOING"},select:{id:true,userId:true,attendanceOutcome:true}}}},
     movements:{orderBy:{departedAt:"asc"},select:{id:true,assetId:true,asset:{select:{name:true,status:true,vehicle:{select:{unitNumber:true}}}},driverUserId:true,leaderUserId:true,driver:{select:PUBLIC_USER_SELECT},leader:{select:PUBLIC_USER_SELECT},departedAt:true,arrivedAt:true,returnedAt:true,returnWithoutArrivalReason:true,dispatchExceptionReason:true,departure:{select:{voidedAt:true}},crew:{select:{userId:true,user:{select:PUBLIC_USER_SELECT}}}}},
     agencies:{where:{voidedAt:null},orderBy:{createdAt:"asc"},select:{agencyType:true,name:true,unit:true,inCharge:true}}}});

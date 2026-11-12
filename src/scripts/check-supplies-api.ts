@@ -411,6 +411,19 @@ async function main() {
     await prisma.incident.update({ where: { id: openIncident.id }, data: { status: "CLOSED", closedAt: new Date(), closingReport: "Se controló el foco en 40 minutos." } });
     const incidentDraft = await call(`/public-posts/incident-draft/${openIncident.id}`, 200, officer);
     assert.match(incidentDraft.title, /Incendio en Ruta 8 km 600/); assert.match(incidentDraft.body, /controló el foco/);
+    assert.deepEqual(incidentDraft.units, []); assert.equal(incidentDraft.peopleCount, 0); assert.match(incidentDraft.body, /No participaron otras instituciones/);
+    // Con moviles, dotacion y otra institucion: el informe dice que moviles salieron, cuantas personas fueron y quien mas participo.
+    const reportDeparture = await prisma.vehicleDeparture.create({ data: { operationKey: randomUUID(), requestHash: randomUUID().replace(/-/g, ""), assetId: engine.id, departedAt: new Date(Date.now() - 7200000), returnedAt: new Date(Date.now() - 3600000), purpose: "Incendio de pastizal", notes: "Prueba", createdByUserId: users[1]!.id } });
+    await prisma.missionMovement.create({ data: { incidentId: openIncident.id, assetId: engine.id, driverUserId: bomberoUser!.id, leaderUserId: keeperUser!.id, createdByUserId: users[1]!.id, departedAt: new Date(Date.now() - 7200000), arrivedAt: new Date(Date.now() - 6900000), returnedAt: new Date(Date.now() - 3600000), departureId: reportDeparture.id, crew: { create: [{ userId: bomberoUser!.id }, { userId: keeperUser!.id }, { userId: users[2]!.id }] } } });
+    await prisma.incidentAgency.create({ data: { incidentId: openIncident.id, agencyType: "POLICE", name: "Comisaría Sampacho", unit: "12", inCharge: "Sargento Gómez", createdByUserId: users[1]!.id } });
+    const fullDraft = await call(`/public-posts/incident-draft/${openIncident.id}`, 200, officer);
+    assert.deepEqual(fullDraft.units, ["5"]); assert.equal(fullDraft.peopleCount, 3);
+    assert.deepEqual(fullDraft.agencies, ["Policía: Comisaría Sampacho, unidad 12, a cargo de Sargento Gómez"]);
+    assert.match(fullDraft.body, /Móvil que salió: 5/); assert.match(fullDraft.body, /3 bomberos/); assert.match(fullDraft.body, /Comisaría Sampacho/);
+    const report = await call("/public-posts", 201, officer, "POST", { kind: "INCIDENT", incidentId: openIncident.id, title: fullDraft.title, summary: fullDraft.summary, body: fullDraft.body, happenedOn: fullDraft.happenedOn, units: fullDraft.units, peopleCount: fullDraft.peopleCount, agencies: fullDraft.agencies });
+    await call(`/public-posts/${report.id}/publish`, 200, officer, "POST", { revision: 1 });
+    const publicReport = await call(`/public/posts/${report.id}`, 200);
+    assert.deepEqual(publicReport.units, ["5"]); assert.equal(publicReport.peopleCount, 3); assert.equal(publicReport.agencies.length, 1);
     await call(`/public-posts/${news.id}/unpublish`, 200, officer, "POST", { revision: 2 });
     await call(`/public/posts/${news.id}`, 404);
 

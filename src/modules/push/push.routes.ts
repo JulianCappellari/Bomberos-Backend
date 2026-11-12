@@ -18,7 +18,7 @@ router.get("/alert-readiness", async (req, res) => {
   if (rank === "comision directiva") return res.json({ status: "NONE", canFix: false, reason: "La Comisión Directiva no recibe las alertas operativas." });
   if (rank === "guardia" || rank === "administrador") return res.json({ status: "INFO", canFix: false, reason: "Recibís cada alerta como aviso informativo, sin tener que confirmar si vas." });
   const absence = user.emergencyAvailability[0];
-  if (absence) return res.json({ status: "NONE", canFix: true, reason: `Tenés cargada una ausencia${absence.endsAt ? ` hasta el ${absence.endsAt.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : " sin fecha de fin"}: mientras tanto no te convocan a las alertas.` });
+  if (absence) return res.json({ status: "NONE", canFix: true, reason: `Tenés cargada una ausencia${absence.endsAt ? ` hasta el ${absence.endsAt.toLocaleString("es-AR", { hourCycle: "h23", timeZone: "America/Argentina/Buenos_Aires", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}` : " sin fecha de fin"}: mientras tanto no te convocan a las alertas.` });
   if (!user.emergencyStatusConfirmedAt) return res.json({ status: "NONE", canFix: true, reason: "Todavía no marcaste que estás disponible para emergencias, así que no te convocan a las alertas." });
   res.json({ status: "YES", canFix: false, reason: "Te convocan a las alertas: el aviso te llega a este celular." });
 });
