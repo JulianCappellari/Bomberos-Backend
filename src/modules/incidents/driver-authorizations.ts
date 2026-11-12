@@ -111,7 +111,7 @@ export async function drivingStatus(tx: Prisma.TransactionClient, userId: string
     const status = authorizationActive(auth, today) ? "APPROVED" : auth?.status === "APPROVED" ? "REVOKED" : (auth?.status ?? "NONE");
     const covered = configured ? Boolean(coverage?.eligible) : Boolean(auth && licenses.some((l) => expandClasses(currentClasses(l, today)).has(normalizeLicenseClass(auth.requiredClass))));
     return {
-      assetId: v.assetId, unitNumber: v.unitNumber, name: v.asset.name, category, required: rule?.required ?? [], configured,
+      assetId: v.assetId, unitNumber: v.unitNumber, name: v.asset.name, category, required: rule?.required ?? [], configured, revision: auth?.revision ?? 0,
       covered, missing: coverage?.missing ?? [], authorization: status as AuthorizationStatus | "NONE",
       decidedAt: auth?.decidedAt ?? null, decisionNote: auth?.decisionNote ?? null,
       decidedBy: auth?.grantedBy ? auth.grantedBy.profile?.fullName || auth.grantedBy.username : null,
