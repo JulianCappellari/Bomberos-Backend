@@ -16,6 +16,19 @@ import { notify, notifyCommand } from "../members/notifications.service";
 import { driverLicenseCheck, licensedDriverPairs } from "./driver-eligibility";
 import { normalizeLicenseClass, VEHICLE_LICENSE_CATEGORIES, VehicleLicenseCategory } from "../../utils/license-classes";
 const router = Router();
+// Orden logico y sin horas futuras. La salida puede ser hasta 1 h anterior al aviso (la alerta se carga a veces despues).
+function assertMovementTimes(t:{departedAt:Date;arrivedAt:Date|null;returnedAt:Date|null},occurredAt:Date){
+  const now=Date.now()+60000;
+  if(+t.departedAt>now||t.arrivedAt&&+t.arrivedAt>now||t.returnedAt&&+t.returnedAt>now)throw new OperationError(400,"Los horarios no pueden ser futuros");
+  if(+t.departedAt<+occurredAt-3600000)throw new OperationError(400,"La salida no puede ser más de una hora anterior al aviso de la emergencia");
+  if(t.arrivedAt&&t.arrivedAt<t.departedAt)throw new OperationError(400,"La llegada no puede ser anterior a la salida");
+  if(t.returnedAt&&t.returnedAt<=t.departedAt)throw new OperationError(400,"El regreso debe ser posterior a la salida");
+  if(t.returnedAt&&t.arrivedAt&&t.arrivedAt>t.returnedAt)throw new OperationError(400,"La llegada no puede ser posterior al regreso");
+}
+async function assertNoOverlap(tx:Prisma.TransactionClient,v:{assetId:string;userIds:string[];from:Date;to:Date|null;exceptId?:string}){
+  const clash=await tx.missionMovement.findFirst({where:{...(v.exceptId?{id:{not:v.exceptId}}:{}),incident:{voidedAt:null},...(v.to?{departedAt:{lt:v.to}}:{}),OR:[{returnedAt:null},{returnedAt:{gt:v.from}}],AND:[{OR:[{assetId:v.assetId},{crew:{some:{userId:{in:v.userIds}}}}]}]},select:{asset:{select:{name:true}}}});
+  if(clash)throw new OperationError(409,`El móvil o parte de la dotación figuran en otra salida en ese horario (${clash.asset.name})`);
+}
 const id = z.string().min(1).max(100);
 const commandRole = (role?: string) => ["ADMIN", "OPERATOR", "GUARD"].includes(role || "");
 async function requirePresentOrCommand(tx: Prisma.TransactionClient, req: Request) {
@@ -83,11 +96,13 @@ router.post("/", async(req,res)=>{
     await lockRow(tx, "Incident", input.incidentId);
     const incident=await tx.incident.findUnique({where:{id:input.incidentId}});
     if(!incident||incident.status!=="OPEN")throw new OperationError(409,"La intervencion no esta abierta");
-    // G15: al rehacer una intervencion anulada se cargan las salidas con sus horarios reales.
-    const historical=Boolean(input.departedAt||input.arrivedAt||input.returnedAt);
-    if(historical&&!incident.replacesIncidentId)throw new OperationError(400,"Los horarios manuales solo se cargan al rehacer una intervención anulada");
+    // La planilla puede cargarse despues de la salida: se aceptan los horarios reales de salida, llegada y
+    // regreso. Si trae el regreso, es una salida ya terminada (G15: tambien al rehacer una anulada).
+    const manual=Boolean(input.departedAt||input.arrivedAt||input.returnedAt);
+    const historical=Boolean(input.returnedAt);
+    if(incident.replacesIncidentId&&(!input.departedAt||!input.returnedAt))throw new OperationError(400,"Al rehacer una intervención anulada cargá la salida y el retorno reales");
     const times={departedAt:input.departedAt?new Date(input.departedAt):new Date(),arrivedAt:input.arrivedAt?new Date(input.arrivedAt):null,returnedAt:input.returnedAt?new Date(input.returnedAt):null};
-    if(historical&&(!input.departedAt||!input.returnedAt||times.departedAt<incident.occurredAt||times.returnedAt!<=times.departedAt||times.returnedAt!>new Date()||times.arrivedAt&&(times.arrivedAt<times.departedAt||times.arrivedAt>times.returnedAt!)))throw new OperationError(400,"Indique salida y retorno reales, en orden y no anteriores al aviso");
+    assertMovementTimes(times,incident.occurredAt);
     const asset=await tx.asset.findFirst({where:{id:input.assetId,deletedAt:null,status:{in:["OPERATIONAL","MAINTENANCE"]},assetType:"VEHICLE"}});
     const blockingJob=await tx.maintenanceJob.findFirst({where:{assetId:input.assetId,blocksOperation:true,status:{in:["OPEN","IN_PROGRESS"]}}});
     const activeNonBlockingJob=asset?await tx.maintenanceJob.findFirst({where:{assetId:input.assetId,blocksOperation:false,status:{in:["OPEN","IN_PROGRESS"]}}}):null;
@@ -98,8 +113,8 @@ router.post("/", async(req,res)=>{
     if(requiresException&&(!input.dispatchExceptionReason||input.dispatchExceptionReason.length<10))throw new OperationError(409,expiredControl?"El control semanal está vencido: la salida requiere una justificación que se informa a jefatura":"La falla no bloqueante debe justificarse y quedar documentada antes del despacho");
     if(!requiresException&&input.dispatchExceptionReason)throw new OperationError(400,"La justificación excepcional solo aplica a móviles con fallas no bloqueantes o control vencido");
     await activePeople(tx,input.userIds);
-    if(!historical&&await tx.missionMovement.findFirst({where:{returnedAt:null,OR:[{assetId:input.assetId},{crew:{some:{userId:{in:input.userIds}}}}]}}))throw new OperationError(409,"Movil o personal ya desplegado en otra salida");
-    if(historical&&await tx.missionMovement.findFirst({where:{incident:{voidedAt:null},departedAt:{lt:times.returnedAt!},OR:[{returnedAt:null},{returnedAt:{gt:times.departedAt}}],AND:[{OR:[{assetId:input.assetId},{crew:{some:{userId:{in:input.userIds}}}}]}]}}))throw new OperationError(409,"El móvil o el personal figuran en otra salida en ese horario");
+    // Ni el movil ni el personal pueden estar en dos salidas que se superpongan en el tiempo.
+    await assertNoOverlap(tx,{assetId:input.assetId,userIds:input.userIds,from:times.departedAt,to:times.returnedAt});
     const today=new Date(stationDate());
     // Movil con categoria de licencia: alcanza con una licencia vigente que cubra las clases exigidas.
     // Movil sin configurar: rige la habilitacion manual de jefatura respaldada por la licencia.
@@ -116,15 +131,17 @@ router.post("/", async(req,res)=>{
     }
     const row=await tx.missionMovement.create({data:{incidentId:input.incidentId,assetId:input.assetId,driverUserId:input.driverUserId,leaderUserId:input.leaderUserId,createdByUserId:req.user!.userId,dispatchExceptionReason:requiresException?input.dispatchExceptionReason:null,departedAt:times.departedAt,arrivedAt:times.arrivedAt,crew:{create:input.userIds.map(userId=>({userId}))}}});
     if(historical){
-      const departure=await tx.vehicleDeparture.create({data:{operationKey:randomUUID(),requestHash:createHash("sha256").update(row.id).digest("hex"),assetId:input.assetId,departedAt:times.departedAt,returnedAt:times.returnedAt!,purpose:incident.title.slice(0,200),notes:"Salida recargada al rehacer la intervencion "+incident.id,createdByUserId:req.user!.userId,crew:{create:input.userIds.map(userId=>({userId,isLeader:userId===input.leaderUserId}))}}});
+      const departure=await tx.vehicleDeparture.create({data:{operationKey:randomUUID(),requestHash:createHash("sha256").update(row.id).digest("hex"),assetId:input.assetId,departedAt:times.departedAt,returnedAt:times.returnedAt!,purpose:incident.title.slice(0,200),notes:(incident.replacesIncidentId?"Salida recargada al rehacer la intervencion ":"Salida cargada en la planilla despues del regreso, intervencion ")+incident.id,createdByUserId:req.user!.userId,crew:{create:input.userIds.map(userId=>({userId,isLeader:userId===input.leaderUserId}))}}});
       await tx.missionMovement.update({where:{id:row.id},data:{returnedAt:times.returnedAt,departureId:departure.id,returnWithoutArrivalReason:times.arrivedAt?null:""}});
-      await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"MISSION_RELOADED_FOR_REDO",entityType:"MissionMovement",entityId:row.id,metadata:{...input}}});
+      await tx.incidentVehicle.upsert({where:{incidentId_assetId:{incidentId:input.incidentId,assetId:input.assetId}},create:{incidentId:input.incidentId,assetId:input.assetId},update:{}});
+      for(const userId of input.userIds)await tx.incidentAssignment.upsert({where:{incidentId_userId:{incidentId:input.incidentId,userId}},create:{incidentId:input.incidentId,userId},update:{}});
+      await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:incident.replacesIncidentId?"MISSION_RELOADED_FOR_REDO":"MISSION_LOADED_LATE",entityType:"MissionMovement",entityId:row.id,metadata:{...input,driverProof}}});
       return row;
     }
     await tx.attendance.updateMany({where:{userId:{in:input.userIds},status:"OPEN",promptShownAt:{not:null}},data:{promptShownAt:null,promptDueAt:null}});
     await tx.incidentVehicle.upsert({where:{incidentId_assetId:{incidentId:input.incidentId,assetId:input.assetId}},create:{incidentId:input.incidentId,assetId:input.assetId},update:{}});
     for(const userId of input.userIds)await tx.incidentAssignment.upsert({where:{incidentId_userId:{incidentId:input.incidentId,userId}},create:{incidentId:input.incidentId,userId},update:{}});
-    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:requiresException?"MISSION_DEPARTED_EXCEPTION":"MISSION_DEPARTED",entityType:"MissionMovement",entityId:row.id,metadata:{...input,driverProof}}});
+    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:requiresException?"MISSION_DEPARTED_EXCEPTION":"MISSION_DEPARTED",entityType:"MissionMovement",entityId:row.id,metadata:{...input,driverProof,manualTimes:manual,recordedAt:new Date().toISOString()}}});
     await notify(tx,input.userIds,"Salida a intervencion registrada","/incidents","La verificacion de presencia queda suspendida hasta el retorno registrado.");
     if(requiresException&&input.dispatchExceptionReason){
       await tx.incidentNotebookEntry.create({data:{incidentId:input.incidentId,authorUserId:req.user!.userId,category:"VEHICLE",title:`Salida excepcional: ${asset.name}`,body:`${expiredControl?"El móvil salió con el control semanal vencido.":"El móvil salió con una falla no bloqueante."} Motivo y constancia: ${input.dispatchExceptionReason}`,occurredAt:new Date()}});
@@ -143,10 +160,31 @@ router.post("/", async(req,res)=>{
     throw error;
   }
 });
+router.patch("/:id/times",async(req,res)=>{
+  const input=z.object({departedAt:z.string().datetime({offset:true}).optional(),arrivedAt:z.string().datetime({offset:true}).nullable().optional(),returnedAt:z.string().datetime({offset:true}).optional(),reason:z.string().trim().min(5,"Indicá el motivo de la corrección").max(500)}).strict().parse(req.body);
+  res.json(await serializable(async tx=>{
+    await requirePresentOrCommand(tx,req);
+    const row=await tx.missionMovement.findUnique({where:{id:String(req.params.id)},include:{crew:true,incident:true}});
+    if(!row)throw new OperationError(404,"Salida no encontrada");
+    await lockRow(tx,"Incident",row.incidentId);
+    if(row.incident.status!=="OPEN")throw new OperationError(409,"La intervención está cerrada: los horarios se corrigen con una enmienda de jefatura");
+    if(input.returnedAt&&!row.returnedAt)throw new OperationError(400,"Para cargar el regreso usá «Registrar retorno al cuartel»");
+    const times={departedAt:input.departedAt?new Date(input.departedAt):row.departedAt,arrivedAt:input.arrivedAt===undefined?row.arrivedAt:input.arrivedAt?new Date(input.arrivedAt):null,returnedAt:input.returnedAt?new Date(input.returnedAt):row.returnedAt};
+    if(row.returnWithoutArrivalReason!==null&&times.arrivedAt)throw new OperationError(400,"Esta salida regresó sin llegar al lugar");
+    assertMovementTimes(times,row.incident.occurredAt);
+    await assertNoOverlap(tx,{assetId:row.assetId,userIds:row.crew.map(m=>m.userId),from:times.departedAt,to:times.returnedAt,exceptId:row.id});
+    const updated=await tx.missionMovement.update({where:{id:row.id},data:times});
+    if(row.departureId)await tx.vehicleDeparture.update({where:{id:row.departureId},data:{departedAt:times.departedAt,...(times.returnedAt?{returnedAt:times.returnedAt}:{})}});
+    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:"MISSION_TIMES_CORRECTED",entityType:"MissionMovement",entityId:row.id,metadata:{reason:input.reason,before:{departedAt:row.departedAt,arrivedAt:row.arrivedAt,returnedAt:row.returnedAt},after:times}}});
+    return updated;
+  }));
+});
 router.post("/:id/:action",async(req,res)=>{
   const {action}=z.object({action:z.enum(["arrive","return","return-without-arrival"])}).parse(req.params);
   const withoutArrival = action==="return-without-arrival";
-  const reason = withoutArrival ? z.object({reason:z.string().trim().max(1000).optional()}).strict().parse(req.body||{}).reason || "" : null;
+  // "at": hora real de la llegada o el regreso (si se registra despues); sin "at" es la hora actual.
+  const body=z.object({reason:z.string().trim().max(1000).optional(),at:z.string().datetime({offset:true}).optional()}).strict().parse(req.body||{});
+  const reason = withoutArrival ? body.reason || "" : null;
   res.json(await serializable(async tx=>{
     await requirePresentOrCommand(tx,req);
     const row=await tx.missionMovement.findUnique({where:{id:String(req.params.id)},include:{crew:true,incident:true}});
@@ -159,13 +197,18 @@ router.post("/:id/:action",async(req,res)=>{
     }
     if(withoutArrival&&row.arrivedAt)throw new OperationError(409,"La llegada ya fue registrada; use retorno normal");
     if(action==="return"&&!row.arrivedAt)throw new OperationError(409,"Registre la llegada al lugar antes del retorno");
-    if(action==="arrive")await tx.missionMovement.update({where:{id:row.id},data:{arrivedAt:now}});
+    const when=body.at?new Date(body.at):now;
+    if(when>new Date(now.getTime()+60000))throw new OperationError(400,"La hora no puede ser futura");
+    const previous=action==="return"?row.arrivedAt!:row.departedAt;
+    if(when<previous)throw new OperationError(400,action==="arrive"?"La llegada no puede ser anterior a la salida":"El regreso no puede ser anterior a la llegada");
+    if(action!=="arrive")await assertNoOverlap(tx,{assetId:row.assetId,userIds:row.crew.map(m=>m.userId),from:row.departedAt,to:when,exceptId:row.id});
+    if(action==="arrive")await tx.missionMovement.update({where:{id:row.id},data:{arrivedAt:when}});
     else{
-      const departure=await tx.vehicleDeparture.create({data:{operationKey:randomUUID(),requestHash:createHash("sha256").update(row.id).digest("hex"),assetId:row.assetId,departedAt:row.departedAt,returnedAt:now,purpose:row.incident.title.slice(0,200),notes:"Salida acreditada desde el seguimiento de la intervencion "+row.incidentId,createdByUserId:req.user!.userId,crew:{create:row.crew.map(m=>({userId:m.userId,isLeader:m.userId===row.leaderUserId}))}}});
-      await tx.missionMovement.update({where:{id:row.id},data:{returnedAt:now,departureId:departure.id,returnWithoutArrivalReason:reason}});
-      await tx.attendance.updateMany({where:{userId:{in:row.crew.map(m=>m.userId)},status:"OPEN",checkInQrId:{not:null}},data:{presenceResumeAt:now}});
+      const departure=await tx.vehicleDeparture.create({data:{operationKey:randomUUID(),requestHash:createHash("sha256").update(row.id).digest("hex"),assetId:row.assetId,departedAt:row.departedAt,returnedAt:when,purpose:row.incident.title.slice(0,200),notes:"Salida acreditada desde el seguimiento de la intervencion "+row.incidentId,createdByUserId:req.user!.userId,crew:{create:row.crew.map(m=>({userId:m.userId,isLeader:m.userId===row.leaderUserId}))}}});
+      await tx.missionMovement.update({where:{id:row.id},data:{returnedAt:when,departureId:departure.id,returnWithoutArrivalReason:reason}});
+      await tx.attendance.updateMany({where:{userId:{in:row.crew.map(m=>m.userId)},status:"OPEN",checkInQrId:{not:null}},data:{presenceResumeAt:when>now?now:when}});
     }
-    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:action==="arrive"?"MISSION_ARRIVED":withoutArrival?"MISSION_RETURNED_WITHOUT_ARRIVAL":"MISSION_RETURNED",entityType:"MissionMovement",entityId:row.id,metadata:{reason}}});
+    await tx.auditLog.create({data:{actorUserId:req.user!.userId,action:action==="arrive"?"MISSION_ARRIVED":withoutArrival?"MISSION_RETURNED_WITHOUT_ARRIVAL":"MISSION_RETURNED",entityType:"MissionMovement",entityId:row.id,metadata:{reason,at:when.toISOString(),manualTime:Boolean(body.at),recordedAt:now.toISOString()}}});
     return {id:row.id};
   }));
 });

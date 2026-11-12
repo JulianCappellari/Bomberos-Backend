@@ -178,7 +178,7 @@ async function main() {
     const dispatch = { incidentId: second.id, assetId: engine.id, driverUserId: bomberoUser!.id, leaderUserId: bomberoUser!.id, userIds: [bomberoUser!.id] };
     const denied = await call("/incidents/logistics", 403, officer, "POST", dispatch);
     assert.match(denied.message, /C\.1 y D\.4/, "Dice qué clases faltan");
-    await call(`/members/declarations/${onlyB.id}`, 200, bombero, "PUT", { ...licenseBase, revision: onlyB.revision, license: { ...licenseBase.license, classes: [{ code: "C.1", grantedOn: day(-300) }, { code: "D.4", grantedOn: day(-300), expiresOn: day(-1) }] } });
+    await call(`/members/declarations/${onlyB.id}`, 200, bombero, "PUT", { ...licenseBase, revision: onlyB.revision, license: { ...licenseBase.license, classes: [{ code: "C.1", grantedOn: day(-300) }, { code: "D.4", grantedOn: day(-300), expiresOn: day(-3) }] } });
     const expiredD4 = await call("/incidents/logistics", 403, officer, "POST", dispatch);
     assert.match(expiredD4.message, /D\.4/, "Una clase vencida no habilita aunque la licencia siga vigente");
     const current = await prisma.personalDeclaration.findUniqueOrThrow({ where: { id: onlyB.id } });
@@ -186,6 +186,29 @@ async function main() {
     assert((await call("/incidents/logistics/options", 200, officer)).licensed.some((r: { assetId: string; userId: string }) => r.assetId === engine.id && r.userId === bomberoUser!.id), "C.2 incluye C.1: queda habilitado para el móvil");
     const departed = await call("/incidents/logistics", 201, officer, "POST", dispatch);
     assert.equal((await prisma.auditLog.findFirstOrThrow({ where: { entityId: departed.id, action: "MISSION_DEPARTED" } }).then((r) => (r.metadata as { driverProof: { via: string } }).driverProof.via)), "LICENSE");
+    // --- Horarios manuales: la planilla se carga a veces después de la salida o de la llegada ---
+    const ago = (minutes: number) => new Date(Date.now() - minutes * 60000).toISOString();
+    const departedRow = await prisma.missionMovement.findUniqueOrThrow({ where: { id: departed.id } });
+    await call(`/incidents/logistics/${departed.id}/arrive`, 400, officer, "POST", { at: new Date(departedRow.departedAt.getTime() - 5 * 60000).toISOString() });
+    await call(`/incidents/logistics/${departed.id}/arrive`, 400, officer, "POST", { at: new Date(Date.now() + 10 * 60000).toISOString() });
+    await call(`/incidents/logistics/${departed.id}/arrive`, 200, officer, "POST", { at: new Date().toISOString() });
+    await call(`/incidents/logistics/${departed.id}/return`, 200, officer, "POST", {});
+    await call(`/incidents/logistics/${departed.id}/times`, 400, officer, "PATCH", { departedAt: ago(40) });
+    await call(`/incidents/logistics/${departed.id}/times`, 400, officer, "PATCH", { departedAt: ago(20), arrivedAt: ago(30), reason: "Llegada antes de la salida" });
+    await call(`/incidents/logistics/${departed.id}/times`, 200, officer, "PATCH", { departedAt: ago(40), arrivedAt: ago(30), reason: "La planilla se cargó después de la salida" });
+    const corrected = await prisma.missionMovement.findUniqueOrThrow({ where: { id: departed.id } });
+    assert(Math.abs(+corrected.departedAt - (Date.now() - 40 * 60000)) < 5000, "Se guarda la hora real de salida");
+    assert.equal(+(await prisma.vehicleDeparture.findUniqueOrThrow({ where: { id: corrected.departureId! } })).departedAt, +corrected.departedAt, "El registro de salidas del móvil queda igual");
+    assert(await prisma.auditLog.findFirst({ where: { entityId: departed.id, action: "MISSION_TIMES_CORRECTED" } }));
+    const lateBody = { incidentId: third.id, assetId: engine.id, driverUserId: bomberoUser!.id, leaderUserId: bomberoUser!.id, userIds: [bomberoUser!.id] };
+    await call("/incidents/logistics", 409, officer, "POST", { ...lateBody, departedAt: ago(35), returnedAt: ago(10) }); // se superpone con la salida corregida
+    await call("/incidents/logistics", 400, officer, "POST", { ...lateBody, departedAt: ago(130), returnedAt: ago(120) }); // mas de 1 h antes del aviso
+    await call("/incidents/logistics", 400, officer, "POST", { ...lateBody, departedAt: ago(50), returnedAt: ago(55) }); // regreso antes de la salida
+    const late = await call("/incidents/logistics", 201, officer, "POST", { ...lateBody, departedAt: ago(58), arrivedAt: ago(52), returnedAt: ago(45) });
+    const lateRow = await prisma.missionMovement.findUniqueOrThrow({ where: { id: late.id } });
+    assert(lateRow.returnedAt && lateRow.departureId, "Salida completa cargada después del regreso");
+    assert(await prisma.auditLog.findFirst({ where: { entityId: late.id, action: "MISSION_LOADED_LATE" } }));
+
     // La guardia de turno edita la planilla sin fichar con QR.
     assert.equal((await call(`/incidents/${second.id}/sheet`, 200, guard)).canWrite, true);
 
